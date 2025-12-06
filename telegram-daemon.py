@@ -217,8 +217,13 @@ def main():
                         print(f"  Stale prompt for pane {pane}", flush=True)
                         continue
 
+                    is_permission = entry.get("type") == "permission_prompt"
                     if cb_data in ("y", "n"):
-                        handle_permission_response(pane, cb_data, bot_token, cb_id, cb_chat_id, cb_msg_id)
+                        if is_permission:
+                            handle_permission_response(pane, cb_data, bot_token, cb_id, cb_chat_id, cb_msg_id)
+                        else:
+                            answer_callback(bot_token, cb_id, "No active prompt")
+                            print(f"  Ignoring y/n: not a permission prompt", flush=True)
                     else:
                         if send_to_pane(pane, cb_data):
                             answer_callback(bot_token, cb_id, f"Sent: {cb_data}")
@@ -244,11 +249,13 @@ def main():
                 print(f"  reply_to={reply_to} text={text[:30] if text else None}", flush=True)
 
                 if reply_to and str(reply_to) in state and text:
-                    pane = state[str(reply_to)]["pane"]
+                    entry = state[str(reply_to)]
+                    pane = entry["pane"]
                     if send_to_pane(pane, text):
                         print(f"  Sent to pane {pane}: {text[:50]}...", flush=True)
-                        # Update original message buttons to show reply was sent
-                        update_message_after_action(bot_token, chat_id, reply_to, "replied")
+                        # Only update buttons for permission prompts (they have buttons)
+                        if entry.get("type") == "permission_prompt":
+                            update_message_after_action(bot_token, chat_id, reply_to, "replied")
                     else:
                         print(f"  Failed (pane {pane} dead)", flush=True)
 

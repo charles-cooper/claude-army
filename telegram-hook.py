@@ -211,6 +211,8 @@ def main():
             pane = get_tmux_pane()
             if pane:
                 entry["pane"] = pane
+            if notification_type:
+                entry["type"] = notification_type
             state[str(msg_id)] = entry
             write_state(state)
 
