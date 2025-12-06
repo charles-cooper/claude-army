@@ -1,5 +1,9 @@
 # Agent Instructions
 
+## Mandatory: Update SPEC.md
+
+After ANY change to functionality, update `SPEC.md` to reflect the change. No exceptions. The spec documents all API contracts, data formats, and behaviors for maintaining the code when upstream APIs change.
+
 ## Codebase Overview
 
 This is a Telegram integration for Claude Code that:
