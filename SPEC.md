@@ -132,12 +132,12 @@ Polls Telegram for button clicks and text replies, sends responses to Claude via
 
 ### Response Handling
 
-| Action | Condition | tmux Commands |
-|--------|-----------|---------------|
-| Allow | `data="y"` + `type="permission_prompt"` | `send-keys Enter` |
-| Deny | `data="n"` + `type="permission_prompt"` | `send-keys Down`, `Down`, `Enter` |
-| Text reply (normal) | Reply to non-permission message | `send-keys C-u`, `{text}`, `Enter` |
-| Text reply (perm) | Reply to permission_prompt | `send-keys C-u`, `Down`, `Down`, `{text}`, `Enter` |
+| Action | Condition | Behavior |
+|--------|-----------|----------|
+| Allow | `data="y"` + `type="permission_prompt"` | Accept the permission prompt |
+| Deny | `data="n"` + `type="permission_prompt"` | Select "Tell Claude something else" (empty) |
+| Text reply (normal) | Reply to non-permission message | Send text as user input |
+| Text reply (perm) | Reply to permission_prompt | Select "Tell Claude something else" with text |
 | Ignore y/n | `data="y"\|"n"` + no permission_prompt | Answer callback only |
 
 ### Button Updates
@@ -169,28 +169,14 @@ Every 5 minutes, remove state entries for dead tmux panes.
 
 ## Claude Code TUI Behavior
 
-### Permission Prompt Navigation
-The permission dialog uses **arrow key navigation**, not text input:
-- Option 1: "Yes" (default, selected)
-- Option 2: "Yes, and don't ask again"
-- Option 3: "Tell Claude something else"
+### Permission Prompt Options
+The permission dialog has three options:
+1. **Yes** - Accept and run the tool
+2. **Yes, and don't ask again** - Accept and add to allow list
+3. **Tell Claude something else** - Reject with custom instructions
 
-To allow: `Enter`
-To deny: `Down` `Down` `Enter`
-
-### tmux send-keys Quirk
-Text and Enter must be separate commands:
-```bash
-# Correct
-tmux send-keys -t pane "text"
-tmux send-keys -t pane Enter
-
-# Wrong (buffers but doesn't submit)
-tmux send-keys -t pane "text" Enter
-```
-
-### Input Buffer
-Clear with `C-u` before sending text (not needed before arrow keys).
+### Injecting Input via tmux
+Use `tmux send-keys` to inject keystrokes. Arrow keys navigate menus, text goes to input fields.
 
 ---
 

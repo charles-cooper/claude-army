@@ -27,7 +27,7 @@ def read_state() -> dict:
     """Read state file with locking."""
     if not STATE_FILE.exists():
         return {}
-    with open(LOCK_FILE, "w") as lock:
+    with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH)
         try:
             return json.loads(STATE_FILE.read_text())
@@ -37,7 +37,7 @@ def read_state() -> dict:
 
 def write_state(state: dict):
     """Write state file with locking."""
-    with open(LOCK_FILE, "w") as lock:
+    with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         STATE_FILE.write_text(json.dumps(state))
 
@@ -121,31 +121,44 @@ def extract_tool_from_transcript(transcript_path: str) -> tuple[dict | None, str
     """Extract pending tool call and assistant text from transcript.
 
     Returns (tool_call, assistant_text) tuple.
-    Only returns text from the same message as the tool_call.
+    Text is in a separate assistant message but same turn (same message.id).
     """
     lines = Path(transcript_path).read_text().strip().split("\n")
 
+    # First pass: find the tool_use and its message ID
+    tool_call = None
+    msg_id = None
     for line in reversed(lines):
         entry = json.loads(line)
         if entry.get("type") != "assistant":
             continue
-
-        content = entry.get("message", {}).get("content", [])
-        tool_call = None
-        assistant_text = ""
-
-        for c in content:
-            if not isinstance(c, dict):
-                continue
-            if c.get("type") == "tool_use":
+        for c in entry.get("message", {}).get("content", []):
+            if isinstance(c, dict) and c.get("type") == "tool_use":
                 tool_call = c
-            elif c.get("type") == "text":
-                assistant_text = c.get("text", "")
-
+                msg_id = entry.get("message", {}).get("id")
+                break
         if tool_call:
-            return tool_call, assistant_text
+            break
 
-    return None, ""
+    if tool_call is None:
+        return None, ""
+
+    # Second pass: find text from the same turn (same message.id)
+    assistant_text = ""
+    for line in reversed(lines):
+        entry = json.loads(line)
+        if entry.get("type") != "assistant":
+            continue
+        if entry.get("message", {}).get("id") != msg_id:
+            continue
+        for c in entry.get("message", {}).get("content", []):
+            if isinstance(c, dict) and c.get("type") == "text":
+                assistant_text = c.get("text", "")
+                break
+        if assistant_text:
+            break
+
+    return tool_call, assistant_text
 
 
 def extract_last_assistant_text(transcript_path: str) -> str:
@@ -177,8 +190,8 @@ def build_context(hook_input: dict) -> str:
                 prefix = f"{escape_markdown(assistant_text)}\n\n---\n\n" if assistant_text else ""
                 tool_desc = format_tool_permission(tool_call.get("name", ""), tool_call.get("input", {}))
                 return f"{prefix}{tool_desc}"
-        except:
-            pass
+        except Exception as e:
+            log(f"Error extracting tool from transcript: {e}")
         return hook_input.get("message", "")
 
     if "message" in hook_input:
@@ -186,7 +199,8 @@ def build_context(hook_input: dict) -> str:
 
     try:
         return escape_markdown(extract_last_assistant_text(transcript_path))
-    except:
+    except Exception as e:
+        log(f"Error extracting assistant text: {e}")
         return ""
 
 
@@ -208,6 +222,15 @@ def send_telegram(bot_token: str, chat_id: str, msg: str, notification_type: str
         json=payload
     )
 
+    # If markdown parsing fails, retry without parse_mode
+    if resp.status_code == 400 and "can't parse entities" in resp.text:
+        log("Markdown failed, retrying without parse_mode...")
+        del payload["parse_mode"]
+        resp = requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json=payload
+        )
+
     if not resp.ok:
         log(f"Telegram error: {resp.status_code} {resp.text}")
         return None
@@ -223,10 +246,13 @@ def save_message_state(msg_id: int, session_id: str, cwd: str, notification_type
     pane = get_tmux_pane()
     if pane:
         entry["pane"] = pane
+    else:
+        log(f"Warning: no tmux pane for msg {msg_id}")
     if notification_type:
         entry["type"] = notification_type
     state[str(msg_id)] = entry
     write_state(state)
+    log(f"Saved msg {msg_id} to state (pane={pane})")
 
 
 def main():
@@ -252,4 +278,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log(f"FATAL: {e}")
+        raise

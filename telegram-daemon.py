@@ -18,7 +18,7 @@ def read_state() -> dict:
     """Read state file with locking."""
     if not STATE_FILE.exists():
         return {}
-    with open(LOCK_FILE, "w") as lock:
+    with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH)
         try:
             return json.loads(STATE_FILE.read_text())
@@ -28,7 +28,7 @@ def read_state() -> dict:
 
 def write_state(state: dict):
     """Write state file with locking."""
-    with open(LOCK_FILE, "w") as lock:
+    with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         STATE_FILE.write_text(json.dumps(state))
 
@@ -56,9 +56,9 @@ def pane_exists(pane: str) -> bool:
 def send_to_pane(pane: str, text: str) -> bool:
     """Send text to a tmux pane."""
     try:
-        # Regular input: clear line, send text, then Enter
+        # Regular input: clear line, send text (literal), then Enter
         subprocess.run(["tmux", "send-keys", "-t", pane, "C-u"], check=True)
-        subprocess.run(["tmux", "send-keys", "-t", pane, text], check=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text], check=True)
         time.sleep(0.1)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
         return True
@@ -70,13 +70,15 @@ def send_to_pane(pane: str, text: str) -> bool:
 def send_text_to_permission_prompt(pane: str, text: str) -> bool:
     """Send text reply to a permission prompt.
 
-    Navigates to "Tell Claude something else" option, types text, submits.
+    Navigate to "Tell Claude something else" (option 3), type text, submit.
     """
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane, "C-u"], check=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
+        time.sleep(0.02)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
-        subprocess.run(["tmux", "send-keys", "-t", pane, text], check=True)
+        time.sleep(0.02)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text], check=True)
         time.sleep(0.1)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
         return True
@@ -283,16 +285,31 @@ def main():
                 if reply_to and str(reply_to) in state and text:
                     entry = state[str(reply_to)]
                     pane = entry["pane"]
-                    is_permission = entry.get("type") == "permission_prompt"
+                    msg_type = entry.get("type")
 
-                    if is_permission:
+                    # Skip entries without type - legacy data
+                    if msg_type is None:
+                        print(f"  Skipping: no type (legacy entry)", flush=True)
+                        continue
+
+                    # Skip handled entries
+                    if entry.get("handled"):
+                        print(f"  Skipping: already handled", flush=True)
+                        continue
+
+                    # Skip stale entries - keys would mess up TUI
+                    if is_stale(reply_to, pane, state):
+                        print(f"  Skipping: stale", flush=True)
+                        continue
+
+                    if msg_type == "permission_prompt":
                         success = send_text_to_permission_prompt(pane, text)
                     else:
                         success = send_to_pane(pane, text)
 
                     if success:
                         print(f"  Sent to pane {pane}: {text[:50]}...", flush=True)
-                        if is_permission:
+                        if msg_type == "permission_prompt":
                             update_message_after_action(bot_token, chat_id, reply_to, "replied")
                             del state[str(reply_to)]
                             write_state(state)
