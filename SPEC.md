@@ -53,7 +53,7 @@ JSONL file, each line:
 |------|--------|
 | Bash | Code block with command + description |
 | Edit | Unified diff |
-| Write | File path |
+| Write | File path + content in code block |
 | Read | File path |
 | AskUserQuestion | Questions with options |
 | Other | JSON of input |

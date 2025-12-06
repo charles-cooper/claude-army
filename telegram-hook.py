@@ -94,7 +94,8 @@ def format_tool_permission(tool_name: str, tool_input: dict) -> str:
 
     elif tool_name == "Write":
         fp = strip_home(tool_input.get("file_path", ""))
-        return f"Claude is asking permission to write `{fp}`"
+        content = tool_input.get("content", "").replace("```", "'''")
+        return f"Claude is asking permission to write `{fp}`:\n\n```\n{content}\n```"
 
     elif tool_name == "Read":
         fp = strip_home(tool_input.get("file_path", ""))
