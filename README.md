@@ -107,5 +107,5 @@ To get these:
 |------|---------|
 | `~/telegram.json` | Bot token and chat ID |
 | `~/.claude/settings.json` | Claude Code hooks config |
-| `~/.claude-telegram-state.json` | Message state for reply tracking |
+| `/tmp/claude-telegram-state.json` | Message state for reply tracking |
 | `/tmp/claude-telegram-hook.log` | Debug log |
