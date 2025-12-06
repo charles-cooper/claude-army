@@ -4,6 +4,10 @@
 
 After ANY change to functionality, update `SPEC.md` to reflect the change. No exceptions. The spec documents all API contracts, data formats, and behaviors for maintaining the code when upstream APIs change.
 
+## Running the Daemon
+
+Run `telegram-daemon.py` using `run_in_background: true`. Never use shell background syntax (`&`) as it prevents output monitoring.
+
 ## Codebase Overview
 
 This is a Telegram integration for Claude Code that:

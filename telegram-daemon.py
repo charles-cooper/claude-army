@@ -200,7 +200,7 @@ def main():
                     print(f"Callback: {cb_data} on msg_id={cb_msg_id}", flush=True)
 
                     if cb_data == "_":
-                        answer_callback(bot_token, cb_id)
+                        answer_callback(bot_token, cb_id, "Already handled")
                         continue
 
                     if str(cb_msg_id) not in state:

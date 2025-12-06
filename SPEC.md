@@ -58,6 +58,14 @@ JSONL file, each line:
 | AskUserQuestion | Questions with options |
 | Other | JSON of input |
 
+### Markdown Escaping
+
+All text content is escaped to prevent Telegram markdown parsing errors:
+- `_`, `*`, `` ` ``, `[`, `]` are escaped with backslash
+- Triple backticks inside code blocks replaced with `'''`
+- Assistant text prefix is escaped
+- Description text preserves underscores for intentional italics
+
 ### State File
 Writes to `/tmp/claude-telegram-state.json`:
 ```json

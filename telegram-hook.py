@@ -14,6 +14,13 @@ from pathlib import Path
 CONFIG_FILE = Path.home() / "telegram.json"
 STATE_FILE = Path("/tmp/claude-telegram-state.json")
 LOCK_FILE = Path("/tmp/claude-telegram-state.lock")
+LOG_FILE = Path("/tmp/claude-telegram-hook.log")
+
+
+def log(msg: str):
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{ts}] {msg}\n")
 
 
 def read_state() -> dict:
@@ -37,10 +44,8 @@ def write_state(state: dict):
 
 def get_tmux_pane() -> str | None:
     """Get current tmux pane identifier."""
-    # Try TMUX_PANE env var first
     pane = os.environ.get("TMUX_PANE")
     if pane:
-        # Convert %N format to session:window.pane format
         try:
             result = subprocess.run(
                 ["tmux", "display-message", "-p", "#{session_name}:#{window_index}.#{pane_index}"],
@@ -53,18 +58,16 @@ def get_tmux_pane() -> str | None:
     return None
 
 
-LOG_FILE = Path("/tmp/claude-telegram-hook.log")
-
-
-def log(msg: str):
-    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    with open(LOG_FILE, "a") as f:
-        f.write(f"[{ts}] {msg}\n")
-
-
 def strip_home(path: str) -> str:
     """Remove home directory prefix from path."""
     return path.removeprefix(str(Path.home()) + "/")
+
+
+def escape_markdown(text: str) -> str:
+    """Escape Telegram markdown special characters in plain text."""
+    for char in ['_', '*', '`', '[', ']']:
+        text = text.replace(char, '\\' + char)
+    return text
 
 
 def format_tool_permission(tool_name: str, tool_input: dict) -> str:
@@ -72,7 +75,8 @@ def format_tool_permission(tool_name: str, tool_input: dict) -> str:
     if tool_name == "Bash":
         cmd = tool_input.get("command", "").replace("```", "'''")
         desc = tool_input.get("description", "")
-        desc_line = f"\n\n_{desc}_" if desc else ""
+        desc_escaped = escape_markdown(desc).replace("\\_", "_")
+        desc_line = f"\n\n_{desc_escaped}_" if desc else ""
         return f"Claude is asking permission to run:\n\n```bash\n{cmd}\n```{desc_line}"
 
     elif tool_name == "Edit":
@@ -85,7 +89,7 @@ def format_tool_permission(tool_name: str, tool_input: dict) -> str:
                 fromfile=fp, tofile=fp, n=9999
             )
         )
-        diff = diff.replace("```", "'''")  # Escape inner code fences
+        diff = diff.replace("```", "'''")
         return f"Claude is asking permission to edit `{fp}`:\n\n```diff\n{diff}\n```"
 
     elif tool_name == "Write":
@@ -100,92 +104,93 @@ def format_tool_permission(tool_name: str, tool_input: dict) -> str:
         questions = tool_input.get("questions", [])
         lines = ["Claude is asking:\n"]
         for q in questions:
-            lines.append(f"*{q.get('question', '')}*\n")
+            question_text = escape_markdown(q.get('question', '')).replace("\\_", "_").replace("\\*", "*")
+            lines.append(f"*{question_text}*\n")
             for opt in q.get("options", []):
-                lines.append(f"• {opt.get('label', '')}")
+                label = escape_markdown(opt.get('label', ''))
+                lines.append(f"• {label}")
         return "\n".join(lines)
 
     else:
-        input_str = json.dumps(tool_input, indent=2)
+        input_str = json.dumps(tool_input, indent=2).replace("```", "'''")
         return f"Claude is asking permission to use {tool_name}:\n\n```\n{input_str}\n```"
 
 
-def main():
-    hook_input = json.load(sys.stdin)
-    log(f"Hook called: {json.dumps(hook_input)}")
+def extract_tool_from_transcript(transcript_path: str) -> tuple[dict | None, str]:
+    """Extract pending tool call and assistant text from transcript.
 
-    config = json.loads(CONFIG_FILE.read_text())
-    bot_token, chat_id = config["bot_token"], config["chat_id"]
+    Returns (tool_call, assistant_text) tuple.
+    """
+    lines = Path(transcript_path).read_text().strip().split("\n")
+    assistant_text = ""
+    tool_call = None
 
-    cwd = hook_input.get("cwd", "")
-    session_id = hook_input.get("session_id", "")
+    for line in reversed(lines):
+        entry = json.loads(line)
+        if entry.get("type") != "assistant":
+            continue
 
-    # Get project path (strip home directory)
-    project = cwd.removeprefix(str(Path.home()) + "/")
+        content = entry.get("message", {}).get("content", [])
+        for c in content:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "tool_use" and not tool_call:
+                tool_call = c
+            elif c.get("type") == "text" and not assistant_text:
+                assistant_text = c.get("text", "")
 
-    # Check event type
-    context = ""
-    notification_type = hook_input.get("notification_type", "")
+        if tool_call and assistant_text:
+            break
+
+    return tool_call, assistant_text
+
+
+def extract_last_assistant_text(transcript_path: str) -> str:
+    """Extract last assistant text from transcript."""
+    for line in reversed(Path(transcript_path).read_text().strip().split("\n")):
+        entry = json.loads(line)
+        if entry.get("type") != "assistant":
+            continue
+        for c in entry.get("message", {}).get("content", []):
+            if isinstance(c, dict) and c.get("type") == "text":
+                return c.get("text", "")
+    return ""
+
+
+def build_context(hook_input: dict) -> str:
+    """Build notification context from hook input."""
     hook_event = hook_input.get("hook_event_name", "")
+    notification_type = hook_input.get("notification_type", "")
     transcript_path = hook_input.get("transcript_path", "")
 
-    # Handle PreCompact event
     if hook_event == "PreCompact":
         trigger = hook_input.get("trigger", "auto")
-        context = f"🔄 Compacting context ({trigger})..."
+        return f"🔄 Compacting context ({trigger})..."
 
-    elif notification_type == "permission_prompt":
-        # Permission prompt - extract pending tool call from transcript
+    if notification_type == "permission_prompt":
         try:
-            lines = Path(transcript_path).read_text().strip().split("\n")
-            assistant_text = ""
-            tool_call = None
-
-            # Find the tool_use and preceding text (may be in separate messages)
-            for line in reversed(lines):
-                entry = json.loads(line)
-                if entry.get("type") == "assistant":
-                    content = entry.get("message", {}).get("content", [])
-
-                    for c in content:
-                        if isinstance(c, dict):
-                            if c.get("type") == "tool_use" and not tool_call:
-                                tool_call = c
-                            elif c.get("type") == "text" and not assistant_text:
-                                assistant_text = c.get("text", "")
-
-                    # Stop once we have both
-                    if tool_call and assistant_text:
-                        break
-
+            tool_call, assistant_text = extract_tool_from_transcript(transcript_path)
             if tool_call:
-                prefix = f"{assistant_text}\n\n---\n\n" if assistant_text else ""
+                prefix = f"{escape_markdown(assistant_text)}\n\n---\n\n" if assistant_text else ""
                 tool_desc = format_tool_permission(tool_call.get("name", ""), tool_call.get("input", {}))
-                context = f"{prefix}{tool_desc}"
-        except:
-            context = hook_input.get("message", "")
-    elif "message" in hook_input:
-        # Other notification event - use the message directly
-        context = hook_input.get("message", "")
-    else:
-        # Stop event - extract from transcript
-        try:
-            for line in reversed(Path(transcript_path).read_text().strip().split("\n")):
-                entry = json.loads(line)
-                if entry.get("type") == "assistant":
-                    for c in entry.get("message", {}).get("content", []):
-                        if isinstance(c, dict) and c.get("type") == "text":
-                            context = c.get("text", "")
-                            break
-                    break
+                return f"{prefix}{tool_desc}"
         except:
             pass
+        return hook_input.get("message", "")
 
-    # Send telegram
-    msg = f"`{project}`\n\n{context}" if context else f"`{project}`"
+    if "message" in hook_input:
+        return hook_input.get("message", "")
+
+    try:
+        return escape_markdown(extract_last_assistant_text(transcript_path))
+    except:
+        return ""
+
+
+def send_telegram(bot_token: str, chat_id: str, msg: str, notification_type: str) -> dict | None:
+    """Send message to Telegram. Returns response JSON on success."""
     payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
 
-    # Add buttons for permission prompts
     if notification_type == "permission_prompt":
         payload["reply_markup"] = {
             "inline_keyboard": [[
@@ -199,23 +204,48 @@ def main():
         f"https://api.telegram.org/bot{bot_token}/sendMessage",
         json=payload
     )
+
     if not resp.ok:
         log(f"Telegram error: {resp.status_code} {resp.text}")
-    else:
-        log("Sent OK")
+        return None
 
-    if resp.ok:
-        msg_id = resp.json().get("result", {}).get("message_id")
+    log("Sent OK")
+    return resp.json()
+
+
+def save_message_state(msg_id: int, session_id: str, cwd: str, notification_type: str):
+    """Save message to state for reply tracking."""
+    state = read_state()
+    entry = {"session_id": session_id, "cwd": cwd}
+    pane = get_tmux_pane()
+    if pane:
+        entry["pane"] = pane
+    if notification_type:
+        entry["type"] = notification_type
+    state[str(msg_id)] = entry
+    write_state(state)
+
+
+def main():
+    hook_input = json.load(sys.stdin)
+    log(f"Hook called: {json.dumps(hook_input)}")
+
+    config = json.loads(CONFIG_FILE.read_text())
+    bot_token, chat_id = config["bot_token"], config["chat_id"]
+
+    cwd = hook_input.get("cwd", "")
+    session_id = hook_input.get("session_id", "")
+    notification_type = hook_input.get("notification_type", "")
+    project = strip_home(cwd)
+
+    context = build_context(hook_input)
+    msg = f"`{project}`\n\n{context}" if context else f"`{project}`"
+
+    result = send_telegram(bot_token, chat_id, msg, notification_type)
+    if result:
+        msg_id = result.get("result", {}).get("message_id")
         if msg_id:
-            state = read_state()
-            entry = {"session_id": session_id, "cwd": cwd}
-            pane = get_tmux_pane()
-            if pane:
-                entry["pane"] = pane
-            if notification_type:
-                entry["type"] = notification_type
-            state[str(msg_id)] = entry
-            write_state(state)
+            save_message_state(msg_id, session_id, cwd, notification_type)
 
 
 if __name__ == "__main__":
