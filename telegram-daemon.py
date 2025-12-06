@@ -133,18 +133,24 @@ def send_text_to_permission_prompt(pane: str, text: str) -> bool:
         return False
 
 
-def send_permission_response(pane: str, allow: bool) -> bool:
+def send_permission_response(pane: str, response: str) -> bool:
     """Send permission response via arrow keys.
 
     Options are: 1) Yes  2) Yes+auto  3) Tell Claude something else
-    Allow = Enter (select first option)
-    Deny = Down Down Enter (select third option)
+    y = Enter (select first option)
+    a = Down Enter (select second option - always allow)
+    n = Down Down Enter (select third option)
     """
     try:
-        if allow:
+        if response == "y":
             # First option is Yes - just press Enter
             subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-        else:
+        elif response == "a":
+            # Second option is "Yes, and don't ask again" - Down Enter
+            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
+            time.sleep(0.02)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+        else:  # n
             # Third option is "tell Claude something else" - Down Down Enter
             subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
             time.sleep(0.02)
@@ -173,10 +179,12 @@ def send_reply(bot_token: str, chat_id: str, reply_to_msg_id: int, text: str):
     )
 
 
-def update_message_after_action(bot_token: str, chat_id: str, msg_id: int, action: str):
+def update_message_after_action(bot_token: str, chat_id: str, msg_id: int, action: str, tool_name: str = None):
     """Update message to show which action was taken."""
     if action == "y":
         label = "✓ Allowed"
+    elif action == "a":
+        label = f"✓ Always: {tool_name}" if tool_name else "✓ Always allowed"
     elif action == "n":
         label = "📝 Reply with instructions"
     elif action == "replied":
@@ -251,18 +259,18 @@ def get_pending_permission(pane: str, state: dict) -> tuple[str | None, dict | N
 
 
 def handle_permission_response(
-    pane: str, response: str, bot_token: str, cb_id: str, chat_id, msg_id: int
+    pane: str, response: str, bot_token: str, cb_id: str, chat_id, msg_id: int, tool_name: str = None
 ) -> bool:
-    """Handle y/n permission response using arrow key navigation.
+    """Handle y/n/a permission response using arrow key navigation.
 
     Returns True if successfully handled (should remove from state).
     """
-    allow = (response == "y")
-    label = "Allowed" if allow else "Denied"
-    if send_permission_response(pane, allow):
+    labels = {"y": "Allowed", "a": f"Always: {tool_name}" if tool_name else "Always allowed", "n": "Denied"}
+    label = labels.get(response, "Unknown")
+    if send_permission_response(pane, response):
         answer_callback(bot_token, cb_id, label)
-        update_message_after_action(bot_token, chat_id, msg_id, response)
-        print(f"  Sent {'Allow' if allow else 'Deny'} to pane {pane}", flush=True)
+        update_message_after_action(bot_token, chat_id, msg_id, response, tool_name)
+        print(f"  Sent {label} to pane {pane}", flush=True)
         return True
     else:
         answer_callback(bot_token, cb_id, "Failed: pane dead")
@@ -360,14 +368,15 @@ def main():
                         print(f"  Already handled in TUI (tool_use_id={tool_use_id})", flush=True)
                         continue
 
-                    if cb_data in ("y", "n"):
+                    if cb_data in ("y", "n", "a"):
                         if is_permission:
-                            if handle_permission_response(pane, cb_data, bot_token, cb_id, cb_chat_id, cb_msg_id):
+                            tool_name = entry.get("tool_name")
+                            if handle_permission_response(pane, cb_data, bot_token, cb_id, cb_chat_id, cb_msg_id, tool_name):
                                 state[str(cb_msg_id)]["handled"] = True
                                 write_state(state)
                         else:
                             answer_callback(bot_token, cb_id, "No active prompt")
-                            print(f"  Ignoring y/n: not a permission prompt", flush=True)
+                            print(f"  Ignoring y/n/a: not a permission prompt", flush=True)
                     else:
                         if send_to_pane(pane, cb_data):
                             answer_callback(bot_token, cb_id, f"Sent: {cb_data}")

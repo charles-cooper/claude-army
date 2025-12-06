@@ -64,8 +64,13 @@ def strip_home(path: str) -> str:
 
 
 def escape_markdown(text: str) -> str:
-    """Escape Telegram markdown special characters in plain text."""
-    for char in ['_', '*', '`', '[', ']']:
+    """Escape Telegram markdown special characters in plain text.
+
+    Triple backticks are escaped to prevent code block issues.
+    Single backticks are left alone.
+    """
+    text = text.replace("```", "\\`\\`\\`")
+    for char in ['_', '*', '[', ']']:
         text = text.replace(char, '\\' + char)
     return text
 
@@ -175,10 +180,10 @@ def extract_last_assistant_text(transcript_path: str) -> str:
     return ""
 
 
-def build_context(hook_input: dict) -> tuple[str, str | None]:
+def build_context(hook_input: dict) -> tuple[str, str | None, str | None]:
     """Build notification context from hook input.
 
-    Returns (message, tool_use_id) tuple.
+    Returns (message, tool_use_id, tool_name) tuple.
     """
     hook_event = hook_input.get("hook_event_name", "")
     notification_type = hook_input.get("notification_type", "")
@@ -186,41 +191,44 @@ def build_context(hook_input: dict) -> tuple[str, str | None]:
 
     if hook_event == "PreCompact":
         trigger = hook_input.get("trigger", "auto")
-        return f"🔄 Compacting context ({trigger})...", None
+        return f"🔄 Compacting context ({trigger})...", None, None
 
     if hook_event == "PostCompact":
         trigger = hook_input.get("trigger", "auto")
-        return f"✅ Context compaction complete ({trigger})", None
+        return f"✅ Context compaction complete ({trigger})", None, None
 
     if notification_type == "permission_prompt":
         try:
             tool_call, assistant_text, tool_use_id = extract_tool_from_transcript(transcript_path)
             if tool_call:
+                tool_name = tool_call.get("name", "")
                 prefix = f"{escape_markdown(assistant_text)}\n\n---\n\n" if assistant_text else ""
-                tool_desc = format_tool_permission(tool_call.get("name", ""), tool_call.get("input", {}))
-                return f"{prefix}{tool_desc}", tool_use_id
+                tool_desc = format_tool_permission(tool_name, tool_call.get("input", {}))
+                return f"{prefix}{tool_desc}", tool_use_id, tool_name
         except Exception as e:
             log(f"Error extracting tool from transcript: {e}")
-        return hook_input.get("message", ""), None
+        return hook_input.get("message", ""), None, None
 
     if "message" in hook_input:
-        return hook_input.get("message", ""), None
+        return hook_input.get("message", ""), None, None
 
     try:
-        return escape_markdown(extract_last_assistant_text(transcript_path)), None
+        return escape_markdown(extract_last_assistant_text(transcript_path)), None, None
     except Exception as e:
         log(f"Error extracting assistant text: {e}")
-        return "", None
+        return "", None, None
 
 
-def send_telegram(bot_token: str, chat_id: str, msg: str, notification_type: str) -> dict | None:
+def send_telegram(bot_token: str, chat_id: str, msg: str, notification_type: str, tool_name: str = None) -> dict | None:
     """Send message to Telegram. Returns response JSON on success."""
     payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
 
     if notification_type == "permission_prompt":
+        always_label = f"✓ Always: {tool_name}" if tool_name else "✓ Always"
         payload["reply_markup"] = {
             "inline_keyboard": [[
                 {"text": "✓ Allow", "callback_data": "y"},
+                {"text": always_label, "callback_data": "a"},
                 {"text": "✗ Deny", "callback_data": "n"}
             ]]
         }
@@ -249,7 +257,7 @@ def send_telegram(bot_token: str, chat_id: str, msg: str, notification_type: str
 
 
 def save_message_state(msg_id: int, session_id: str, cwd: str, notification_type: str,
-                       transcript_path: str = None, tool_use_id: str = None):
+                       transcript_path: str = None, tool_use_id: str = None, tool_name: str = None):
     """Save message to state for reply tracking."""
     state = read_state()
     entry = {"session_id": session_id, "cwd": cwd}
@@ -264,9 +272,11 @@ def save_message_state(msg_id: int, session_id: str, cwd: str, notification_type
         entry["transcript_path"] = transcript_path
     if tool_use_id:
         entry["tool_use_id"] = tool_use_id
+    if tool_name:
+        entry["tool_name"] = tool_name
     state[str(msg_id)] = entry
     write_state(state)
-    log(f"Saved msg {msg_id} to state (pane={pane}, tool_use_id={tool_use_id})")
+    log(f"Saved msg {msg_id} to state (pane={pane}, tool_use_id={tool_use_id}, tool_name={tool_name})")
 
 
 def main():
@@ -281,15 +291,15 @@ def main():
     notification_type = hook_input.get("notification_type", "")
     project = strip_home(cwd)
 
-    context, tool_use_id = build_context(hook_input)
+    context, tool_use_id, tool_name = build_context(hook_input)
     msg = f"`{project}`\n\n{context}" if context else f"`{project}`"
     transcript_path = hook_input.get("transcript_path", "")
 
-    result = send_telegram(bot_token, chat_id, msg, notification_type)
+    result = send_telegram(bot_token, chat_id, msg, notification_type, tool_name)
     if result:
         msg_id = result.get("result", {}).get("message_id")
         if msg_id:
-            save_message_state(msg_id, session_id, cwd, notification_type, transcript_path, tool_use_id)
+            save_message_state(msg_id, session_id, cwd, notification_type, transcript_path, tool_use_id, tool_name)
 
 
 if __name__ == "__main__":

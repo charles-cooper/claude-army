@@ -44,7 +44,7 @@ JSONL file, each line:
 
 | Event | Message Format | Buttons |
 |-------|----------------|---------|
-| `permission_prompt` | Assistant text + formatted tool call | Allow / Deny |
+| `permission_prompt` | Assistant text + formatted tool call | Allow / Always / Deny |
 | `PreCompact` | "Compacting context (auto\|manual)..." | None |
 | `PostCompact` | "Context compaction complete (auto\|manual)" | None |
 
@@ -62,7 +62,9 @@ JSONL file, each line:
 ### Markdown Escaping
 
 All text content is escaped to prevent Telegram markdown parsing errors:
-- `_`, `*`, `` ` ``, `[`, `]` are escaped with backslash
+- `_`, `*`, `[`, `]` are escaped with backslash in plain text
+- Triple backticks (` ``` `) are escaped with backslashes in plain text
+- Single backticks are left alone (for inline code formatting)
 - Triple backticks inside code blocks replaced with `'''`
 - Assistant text prefix is escaped
 - Description text preserves underscores for intentional italics
@@ -77,7 +79,8 @@ Writes to `/tmp/claude-telegram-state.json`:
     "pane": "session:window.pane",
     "type": "permission_prompt",
     "transcript_path": "/path/to/transcript.jsonl",
-    "tool_use_id": "toolu_..."
+    "tool_use_id": "toolu_...",
+    "tool_name": "Bash"
   }
 }
 ```
@@ -138,6 +141,7 @@ Polls Telegram for button clicks and text replies, sends responses to Claude via
 | Action | Condition | Behavior |
 |--------|-----------|----------|
 | Allow | `data="y"` + `type="permission_prompt"` | Accept the permission prompt |
+| Always | `data="a"` + `type="permission_prompt"` | Accept + add to allow list (Down Enter) |
 | Deny | `data="n"` + `type="permission_prompt"` | Select "Tell Claude something else" (empty) |
 | Text reply | Reply to any message | See text reply logic below |
 
@@ -155,10 +159,11 @@ Polls Telegram for button clicks and text replies, sends responses to Claude via
 
 ### Button Updates
 After action, update button via `POST /bot{token}/editMessageReplyMarkup`:
-- Allow → "Allowed"
-- Deny → "Reply with instructions"
-- Text reply (permission only) → "Replied"
-- Stale → "Expired"
+- Allow → "✓ Allowed"
+- Always → "✓ Always: {tool_name}" (e.g., "✓ Always: Bash")
+- Deny → "📝 Reply with instructions"
+- Text reply (permission only) → "💬 Replied"
+- Stale → "⏰ Expired"
 
 After handling Allow/Deny/Stale, message is marked as handled to prevent re-sending navigation keys. Handled permission prompts still accept text replies as regular user input.
 
