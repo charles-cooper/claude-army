@@ -10,9 +10,14 @@ Run `telegram-daemon.py` using `run_in_background: true`. Never use shell backgr
 
 ## Codebase Overview
 
-This is a Telegram integration for Claude Code that:
-1. `telegram-hook.py` - Hook that sends notifications to Telegram when Claude needs input
-2. `telegram-daemon.py` - Daemon that polls Telegram and injects replies into Claude via tmux
+This is a Telegram integration for Claude Code that watches transcripts and sends notifications:
+
+**Main components:**
+- `telegram-daemon.py` - Main daemon, orchestrates everything
+- `transcript_watcher.py` - Watches transcript files for tool_use
+- `telegram_poller.py` - Handles Telegram callbacks and messages
+- `telegram_utils.py` - Shared utilities (formatting, state, API)
+- `telegram-hook.py` - Legacy hook (slower, kept for backup)
 
 ## Critical Learnings
 
