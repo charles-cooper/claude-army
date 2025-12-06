@@ -117,10 +117,10 @@ def format_tool_permission(tool_name: str, tool_input: dict) -> str:
         return f"Claude is asking permission to use {tool_name}:\n\n```\n{input_str}\n```"
 
 
-def extract_tool_from_transcript(transcript_path: str) -> tuple[dict | None, str]:
+def extract_tool_from_transcript(transcript_path: str) -> tuple[dict | None, str, str | None]:
     """Extract pending tool call and assistant text from transcript.
 
-    Returns (tool_call, assistant_text) tuple.
+    Returns (tool_call, assistant_text, tool_use_id) tuple.
     Text is in a separate assistant message but same turn (same message.id).
     """
     lines = Path(transcript_path).read_text().strip().split("\n")
@@ -141,7 +141,9 @@ def extract_tool_from_transcript(transcript_path: str) -> tuple[dict | None, str
             break
 
     if tool_call is None:
-        return None, ""
+        return None, "", None
+
+    tool_use_id = tool_call.get("id")
 
     # Second pass: find text from the same turn (same message.id)
     assistant_text = ""
@@ -158,7 +160,7 @@ def extract_tool_from_transcript(transcript_path: str) -> tuple[dict | None, str
         if assistant_text:
             break
 
-    return tool_call, assistant_text
+    return tool_call, assistant_text, tool_use_id
 
 
 def extract_last_assistant_text(transcript_path: str) -> str:
@@ -173,35 +175,38 @@ def extract_last_assistant_text(transcript_path: str) -> str:
     return ""
 
 
-def build_context(hook_input: dict) -> str:
-    """Build notification context from hook input."""
+def build_context(hook_input: dict) -> tuple[str, str | None]:
+    """Build notification context from hook input.
+
+    Returns (message, tool_use_id) tuple.
+    """
     hook_event = hook_input.get("hook_event_name", "")
     notification_type = hook_input.get("notification_type", "")
     transcript_path = hook_input.get("transcript_path", "")
 
     if hook_event == "PreCompact":
         trigger = hook_input.get("trigger", "auto")
-        return f"🔄 Compacting context ({trigger})..."
+        return f"🔄 Compacting context ({trigger})...", None
 
     if notification_type == "permission_prompt":
         try:
-            tool_call, assistant_text = extract_tool_from_transcript(transcript_path)
+            tool_call, assistant_text, tool_use_id = extract_tool_from_transcript(transcript_path)
             if tool_call:
                 prefix = f"{escape_markdown(assistant_text)}\n\n---\n\n" if assistant_text else ""
                 tool_desc = format_tool_permission(tool_call.get("name", ""), tool_call.get("input", {}))
-                return f"{prefix}{tool_desc}"
+                return f"{prefix}{tool_desc}", tool_use_id
         except Exception as e:
             log(f"Error extracting tool from transcript: {e}")
-        return hook_input.get("message", "")
+        return hook_input.get("message", ""), None
 
     if "message" in hook_input:
-        return hook_input.get("message", "")
+        return hook_input.get("message", ""), None
 
     try:
-        return escape_markdown(extract_last_assistant_text(transcript_path))
+        return escape_markdown(extract_last_assistant_text(transcript_path)), None
     except Exception as e:
         log(f"Error extracting assistant text: {e}")
-        return ""
+        return "", None
 
 
 def send_telegram(bot_token: str, chat_id: str, msg: str, notification_type: str) -> dict | None:
@@ -239,7 +244,8 @@ def send_telegram(bot_token: str, chat_id: str, msg: str, notification_type: str
     return resp.json()
 
 
-def save_message_state(msg_id: int, session_id: str, cwd: str, notification_type: str):
+def save_message_state(msg_id: int, session_id: str, cwd: str, notification_type: str,
+                       transcript_path: str = None, tool_use_id: str = None):
     """Save message to state for reply tracking."""
     state = read_state()
     entry = {"session_id": session_id, "cwd": cwd}
@@ -250,9 +256,13 @@ def save_message_state(msg_id: int, session_id: str, cwd: str, notification_type
         log(f"Warning: no tmux pane for msg {msg_id}")
     if notification_type:
         entry["type"] = notification_type
+    if transcript_path:
+        entry["transcript_path"] = transcript_path
+    if tool_use_id:
+        entry["tool_use_id"] = tool_use_id
     state[str(msg_id)] = entry
     write_state(state)
-    log(f"Saved msg {msg_id} to state (pane={pane})")
+    log(f"Saved msg {msg_id} to state (pane={pane}, tool_use_id={tool_use_id})")
 
 
 def main():
@@ -267,14 +277,15 @@ def main():
     notification_type = hook_input.get("notification_type", "")
     project = strip_home(cwd)
 
-    context = build_context(hook_input)
+    context, tool_use_id = build_context(hook_input)
     msg = f"`{project}`\n\n{context}" if context else f"`{project}`"
+    transcript_path = hook_input.get("transcript_path", "")
 
     result = send_telegram(bot_token, chat_id, msg, notification_type)
     if result:
         msg_id = result.get("result", {}).get("message_id")
         if msg_id:
-            save_message_state(msg_id, session_id, cwd, notification_type)
+            save_message_state(msg_id, session_id, cwd, notification_type, transcript_path, tool_use_id)
 
 
 if __name__ == "__main__":

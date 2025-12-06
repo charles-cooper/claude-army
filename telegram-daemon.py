@@ -3,6 +3,7 @@
 
 import fcntl
 import json
+import re
 import requests
 import subprocess
 import sys
@@ -51,6 +52,51 @@ def pane_exists(pane: str) -> bool:
         capture_output=True
     )
     return result.returncode == 0
+
+
+def tool_already_handled(transcript_path: str, tool_use_id: str) -> bool:
+    """Check if a tool_use has a corresponding tool_result in the transcript."""
+    if not transcript_path or not tool_use_id:
+        return False
+    try:
+        with open(transcript_path) as f:
+            for line in f:
+                if tool_use_id in line and '"tool_result"' in line:
+                    return True
+    except Exception as e:
+        print(f"  Error checking transcript: {e}", flush=True)
+    return False
+
+
+def get_pending_tool_from_transcript(transcript_path: str) -> str | None:
+    """Check transcript for any pending tool_use (no corresponding tool_result).
+
+    Returns the tool_use_id if pending, None otherwise.
+    """
+    if not transcript_path:
+        return None
+    try:
+        tool_uses = set()
+        tool_results = set()
+        with open(transcript_path) as f:
+            for line in f:
+                # Look for tool_use entries
+                if '"tool_use"' in line and '"type":"tool_use"' in line:
+                    match = re.search(r'"id"\s*:\s*"(toolu_[^"]+)"', line)
+                    if match:
+                        tool_uses.add(match.group(1))
+                # Look for tool_result entries
+                if '"tool_result"' in line:
+                    match = re.search(r'"tool_use_id"\s*:\s*"(toolu_[^"]+)"', line)
+                    if match:
+                        tool_results.add(match.group(1))
+
+        pending = tool_uses - tool_results
+        if pending:
+            return pending.pop()
+    except Exception as e:
+        print(f"  Error checking transcript for pending: {e}", flush=True)
+    return None
 
 
 def send_to_pane(pane: str, text: str) -> bool:
@@ -119,6 +165,14 @@ def answer_callback(bot_token: str, callback_id: str, text: str = None):
     )
 
 
+def send_reply(bot_token: str, chat_id: str, reply_to_msg_id: int, text: str):
+    """Send a reply message on Telegram."""
+    requests.post(
+        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+        json={"chat_id": chat_id, "text": text, "reply_to_message_id": reply_to_msg_id}
+    )
+
+
 def update_message_after_action(bot_token: str, chat_id: str, msg_id: int, action: str):
     """Update message to show which action was taken."""
     if action == "y":
@@ -149,6 +203,23 @@ def cleanup_dead_panes(state: dict) -> dict:
     return live
 
 
+def mark_tui_handled(state: dict, bot_token: str, chat_id: str) -> int:
+    """Mark permission prompts that were handled via TUI. Returns count marked."""
+    count = 0
+    for msg_id, entry in state.items():
+        if entry.get("handled"):
+            continue
+        if entry.get("type") != "permission_prompt":
+            continue
+        transcript_path = entry.get("transcript_path")
+        tool_use_id = entry.get("tool_use_id")
+        if tool_already_handled(transcript_path, tool_use_id):
+            entry["handled"] = True
+            update_message_after_action(bot_token, chat_id, int(msg_id), "stale")
+            count += 1
+    return count
+
+
 def is_stale(msg_id: int, pane: str, state: dict) -> bool:
     """Check if a message is stale (newer message exists for same pane)."""
     latest = max(
@@ -156,6 +227,27 @@ def is_stale(msg_id: int, pane: str, state: dict) -> bool:
         default=0
     )
     return msg_id < latest
+
+
+def get_pending_permission(pane: str, state: dict) -> tuple[str | None, dict | None]:
+    """Get the pending permission prompt for a pane (if any).
+
+    Checks transcript to determine if permission is truly pending.
+    Returns (msg_id, entry) or (None, None).
+    """
+    # Find all permission prompts for this pane, sorted by msg_id desc
+    candidates = [
+        (mid, e) for mid, e in state.items()
+        if e.get("pane") == pane and e.get("type") == "permission_prompt"
+    ]
+    candidates.sort(key=lambda x: int(x[0]), reverse=True)
+
+    for msg_id, entry in candidates:
+        transcript_path = entry.get("transcript_path")
+        tool_use_id = entry.get("tool_use_id")
+        if not tool_already_handled(transcript_path, tool_use_id):
+            return msg_id, entry
+    return None, None
 
 
 def handle_permission_response(
@@ -207,8 +299,14 @@ def main():
                 cleaned = cleanup_dead_panes(state)
                 if len(cleaned) != len(state):
                     print(f"Cleaned {len(state) - len(cleaned)} dead entries", flush=True)
-                    write_state(cleaned)
                     state = cleaned
+
+                # Mark TUI-handled prompts
+                tui_count = mark_tui_handled(state, bot_token, chat_id)
+                if tui_count:
+                    print(f"Marked {tui_count} TUI-handled prompts", flush=True)
+
+                write_state(state)
                 last_cleanup = time.time()
 
             for update in resp.json().get("result", []):
@@ -250,6 +348,18 @@ def main():
                         continue
 
                     is_permission = entry.get("type") == "permission_prompt"
+
+                    # Check if tool was already handled via TUI
+                    transcript_path = entry.get("transcript_path")
+                    tool_use_id = entry.get("tool_use_id")
+                    if is_permission and tool_already_handled(transcript_path, tool_use_id):
+                        answer_callback(bot_token, cb_id, "Already handled in TUI")
+                        update_message_after_action(bot_token, cb_chat_id, cb_msg_id, "stale")
+                        state[str(cb_msg_id)]["handled"] = True
+                        write_state(state)
+                        print(f"  Already handled in TUI (tool_use_id={tool_use_id})", flush=True)
+                        continue
+
                     if cb_data in ("y", "n"):
                         if is_permission:
                             if handle_permission_response(pane, cb_data, bot_token, cb_id, cb_chat_id, cb_msg_id):
@@ -284,37 +394,38 @@ def main():
 
                 if reply_to and str(reply_to) in state and text:
                     entry = state[str(reply_to)]
-                    pane = entry["pane"]
-                    msg_type = entry.get("type")
-
-                    # Skip entries without type - legacy data
-                    if msg_type is None:
-                        print(f"  Skipping: no type (legacy entry)", flush=True)
+                    pane = entry.get("pane")
+                    transcript_path = entry.get("transcript_path")
+                    if not pane:
+                        print(f"  Skipping: no pane in entry", flush=True)
                         continue
 
-                    # Skip handled entries
-                    if entry.get("handled"):
-                        print(f"  Skipping: already handled", flush=True)
-                        continue
+                    # Check transcript directly for pending tool_use (more reliable than state)
+                    pending_tool_id = get_pending_tool_from_transcript(transcript_path)
 
-                    # Skip stale entries - keys would mess up TUI
-                    if is_stale(reply_to, pane, state):
-                        print(f"  Skipping: stale", flush=True)
-                        continue
-
-                    if msg_type == "permission_prompt":
-                        success = send_text_to_permission_prompt(pane, text)
+                    if pending_tool_id:
+                        # There's a pending permission - check if user is replying to it
+                        entry_tool_id = entry.get("tool_use_id")
+                        if entry_tool_id == pending_tool_id:
+                            # User is replying to THE pending permission - use permission input
+                            if send_text_to_permission_prompt(pane, text):
+                                print(f"  Sent to permission prompt on pane {pane}: {text[:50]}...", flush=True)
+                                update_message_after_action(bot_token, chat_id, reply_to, "replied")
+                            else:
+                                print(f"  Failed (pane {pane} dead)", flush=True)
+                        else:
+                            # User replied to something else but there's a pending permission
+                            # Block: don't want to mess up TUI state
+                            # TODO: Option 2 - send anyway as regular input
+                            # TODO: Option 3 - queue and send after permission handled
+                            print(f"  Blocked: transcript has pending tool ({pending_tool_id[:20]}...), reply to that first", flush=True)
+                            send_reply(bot_token, chat_id, msg.get("message_id"), "⚠️ Ignored: there's a pending permission prompt. Please respond to that first.")
                     else:
-                        success = send_to_pane(pane, text)
-
-                    if success:
-                        print(f"  Sent to pane {pane}: {text[:50]}...", flush=True)
-                        if msg_type == "permission_prompt":
-                            update_message_after_action(bot_token, chat_id, reply_to, "replied")
-                            del state[str(reply_to)]
-                            write_state(state)
-                    else:
-                        print(f"  Failed (pane {pane} dead)", flush=True)
+                        # No pending permission - send as regular input
+                        if send_to_pane(pane, text):
+                            print(f"  Sent to pane {pane}: {text[:50]}...", flush=True)
+                        else:
+                            print(f"  Failed (pane {pane} dead)", flush=True)
 
         except KeyboardInterrupt:
             break

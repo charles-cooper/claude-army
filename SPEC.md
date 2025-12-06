@@ -74,7 +74,9 @@ Writes to `/tmp/claude-telegram-state.json`:
     "session_id": "uuid",
     "cwd": "/path",
     "pane": "session:window.pane",
-    "type": "permission_prompt"  // only for permission prompts
+    "type": "permission_prompt",
+    "transcript_path": "/path/to/transcript.jsonl",
+    "tool_use_id": "toolu_..."
   }
 }
 ```
@@ -136,9 +138,19 @@ Polls Telegram for button clicks and text replies, sends responses to Claude via
 |--------|-----------|----------|
 | Allow | `data="y"` + `type="permission_prompt"` | Accept the permission prompt |
 | Deny | `data="n"` + `type="permission_prompt"` | Select "Tell Claude something else" (empty) |
-| Text reply (normal) | Reply to non-permission message | Send text as user input |
-| Text reply (perm) | Reply to permission_prompt | Select "Tell Claude something else" with text |
-| Ignore y/n | `data="y"\|"n"` + no permission_prompt | Answer callback only |
+| Text reply | Reply to any message | See text reply logic below |
+
+### Text Reply Logic
+1. Find pane and transcript_path from replied-to message
+2. Check transcript directly for any pending tool_use (more reliable than state)
+3. If pending tool exists:
+   - If replying to THAT tool's message → use permission input (Down Down + text)
+   - Else → block and reply on Telegram: "⚠️ Ignored: there's a pending permission prompt"
+4. If no pending tool → send as regular input
+
+**Future options for blocked case:**
+- Option 2: Send anyway as regular input (may not work if prompt blocking)
+- Option 3: Queue message, send after permission handled
 
 ### Button Updates
 After action, update button via `POST /bot{token}/editMessageReplyMarkup`:
@@ -147,13 +159,15 @@ After action, update button via `POST /bot{token}/editMessageReplyMarkup`:
 - Text reply (permission only) → "Replied"
 - Stale → "Expired"
 
-After handling Allow/Deny/Stale, message is removed from state to prevent re-sending keys.
+After handling Allow/Deny/Stale, message is marked as handled to prevent re-sending navigation keys. Handled permission prompts still accept text replies as regular user input.
 
 ### Stale Detection
 A message is stale if a newer message exists for the same tmux pane.
 
 ### Cleanup
-Every 5 minutes, remove state entries for dead tmux panes.
+Every 5 minutes:
+- Remove state entries for dead tmux panes
+- Mark TUI-handled permission prompts by checking transcript for tool_result
 
 ### Telegram API Used
 - `GET /bot{token}/getUpdates` - poll for updates
