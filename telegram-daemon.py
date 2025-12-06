@@ -56,12 +56,67 @@ def pane_exists(pane: str) -> bool:
 def send_to_pane(pane: str, text: str) -> bool:
     """Send text to a tmux pane."""
     try:
+        # Regular input: clear line, send text, then Enter
+        subprocess.run(["tmux", "send-keys", "-t", pane, "C-u"], check=True)
         subprocess.run(["tmux", "send-keys", "-t", pane, text], check=True)
+        time.sleep(0.1)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
         return True
     except subprocess.CalledProcessError as e:
         print(f"  Error: {e}", flush=True)
         return False
+
+
+def send_permission_response(pane: str, allow: bool) -> bool:
+    """Send permission response via arrow keys.
+
+    Options are: 1) Yes  2) Yes+auto  3) Tell Claude something else
+    Allow = Enter (select first option)
+    Deny = Down Down Enter (select third option)
+    """
+    try:
+        if allow:
+            # First option is Yes - just press Enter
+            subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+        else:
+            # Third option is "tell Claude something else" - Down Down Enter
+            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
+            time.sleep(0.02)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
+            time.sleep(0.02)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"  Error: {e}", flush=True)
+        return False
+
+
+def answer_callback(bot_token: str, callback_id: str, text: str = None):
+    """Answer a callback query to dismiss the loading state."""
+    requests.post(
+        f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
+        json={"callback_query_id": callback_id, "text": text}
+    )
+
+
+def update_message_after_action(bot_token: str, chat_id: str, msg_id: int, action: str):
+    """Update message to show which action was taken."""
+    if action == "y":
+        label = "✓ Allowed"
+    elif action == "n":
+        label = "📝 Reply with instructions"
+    elif action == "replied":
+        label = "💬 Replied"
+    else:
+        label = "⏰ Expired"
+    requests.post(
+        f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup",
+        json={
+            "chat_id": chat_id,
+            "message_id": msg_id,
+            "reply_markup": {"inline_keyboard": [[{"text": label, "callback_data": "_"}]]}
+        }
+    )
 
 
 def cleanup_dead_panes(state: dict) -> dict:
@@ -72,6 +127,30 @@ def cleanup_dead_panes(state: dict) -> dict:
         if pane and pane_exists(pane):
             live[msg_id] = entry
     return live
+
+
+def is_stale(msg_id: int, pane: str, state: dict) -> bool:
+    """Check if a message is stale (newer message exists for same pane)."""
+    latest = max(
+        (int(mid) for mid, e in state.items() if e.get("pane") == pane),
+        default=0
+    )
+    return msg_id < latest
+
+
+def handle_permission_response(
+    pane: str, response: str, bot_token: str, cb_id: str, chat_id, msg_id: int
+):
+    """Handle y/n permission response using arrow key navigation."""
+    allow = (response == "y")
+    label = "Allowed" if allow else "Denied"
+    if send_permission_response(pane, allow):
+        answer_callback(bot_token, cb_id, label)
+        update_message_after_action(bot_token, chat_id, msg_id, response)
+        print(f"  Sent {'Allow' if allow else 'Deny'} to pane {pane}", flush=True)
+    else:
+        answer_callback(bot_token, cb_id, "Failed: pane dead")
+        print(f"  Failed (pane {pane} dead)", flush=True)
 
 
 CLEANUP_INTERVAL = 300  # 5 minutes
@@ -109,7 +188,51 @@ def main():
 
             for update in resp.json().get("result", []):
                 offset = update["update_id"] + 1
+
+                # Handle callback queries (button clicks)
+                callback = update.get("callback_query")
+                if callback:
+                    cb_id = callback["id"]
+                    cb_data = callback.get("data", "")
+                    cb_msg = callback.get("message", {})
+                    cb_msg_id = cb_msg.get("message_id")
+                    cb_chat_id = cb_msg.get("chat", {}).get("id")
+                    print(f"Callback: {cb_data} on msg_id={cb_msg_id}", flush=True)
+
+                    if cb_data == "_":
+                        answer_callback(bot_token, cb_id)
+                        continue
+
+                    if str(cb_msg_id) not in state:
+                        answer_callback(bot_token, cb_id, "Session not found")
+                        print(f"  Skipping: msg_id not in state", flush=True)
+                        continue
+
+                    entry = state[str(cb_msg_id)]
+                    pane = entry["pane"]
+
+                    if is_stale(cb_msg_id, pane, state):
+                        answer_callback(bot_token, cb_id, "Stale prompt")
+                        update_message_after_action(bot_token, cb_chat_id, cb_msg_id, "stale")
+                        print(f"  Stale prompt for pane {pane}", flush=True)
+                        continue
+
+                    if cb_data in ("y", "n"):
+                        handle_permission_response(pane, cb_data, bot_token, cb_id, cb_chat_id, cb_msg_id)
+                    else:
+                        if send_to_pane(pane, cb_data):
+                            answer_callback(bot_token, cb_id, f"Sent: {cb_data}")
+                            print(f"  Sent to pane {pane}: {cb_data}", flush=True)
+                        else:
+                            answer_callback(bot_token, cb_id, "Failed")
+                            print(f"  Failed (pane {pane} dead)", flush=True)
+                    continue
+
+                # Handle regular messages
                 msg = update.get("message", {})
+                if not msg:
+                    continue
+
                 print(f"Update: {update.get('update_id')} msg_id={msg.get('message_id')}", flush=True)
 
                 if str(msg.get("chat", {}).get("id")) != chat_id:
@@ -124,6 +247,8 @@ def main():
                     pane = state[str(reply_to)]["pane"]
                     if send_to_pane(pane, text):
                         print(f"  Sent to pane {pane}: {text[:50]}...", flush=True)
+                        # Update original message buttons to show reply was sent
+                        update_message_after_action(bot_token, chat_id, reply_to, "replied")
                     else:
                         print(f"  Failed (pane {pane} dead)", flush=True)
 

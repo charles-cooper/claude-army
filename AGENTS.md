@@ -1,76 +1,49 @@
-# Claude Telegram Notifier
+# Agent Instructions
 
-Sends Telegram notifications when Claude Code needs input, and allows replying via Telegram.
+## Codebase Overview
 
-## Current State
+This is a Telegram integration for Claude Code that:
+1. `telegram-hook.py` - Hook that sends notifications to Telegram when Claude needs input
+2. `telegram-daemon.py` - Daemon that polls Telegram and injects replies into Claude via tmux
 
-**Working:**
-- Permission prompt notifications (Bash, Edit, Write, Read)
-- Stop event notifications
-- Idle prompt notifications (60+ seconds)
-- Reply injection via tmux send-keys
+## Critical Learnings
 
-## Files
+### Claude Code TUI Navigation
+- Permission prompts use **arrow keys**, NOT text input (y/n doesn't work)
+- Default selection is "Yes" - just press Enter to allow
+- "Tell Claude something else" is the 3rd option - navigate with Down Down Enter
 
-- `telegram-hook.py` - Claude Code hook that sends notifications
-- `telegram-daemon.py` - Polls Telegram for replies, injects into Claude via tmux
-- `install.sh` - Automated setup
-- `uninstall.sh` - Clean removal
+### tmux send-keys
+- Text and Enter MUST be separate commands: `send-keys "text"` then `send-keys Enter`
+- Single command `send-keys "text" Enter` buffers text but doesn't submit
+- Clear input buffer with Ctrl-U before sending text (but not before arrow keys)
 
-## Architecture
+### Telegram API
+- Use `inline_keyboard` with `callback_data` for buttons
+- `editMessageReplyMarkup` to update buttons after action
+- `answerCallbackQuery` to dismiss loading state on button click
+- Android client has limited syntax highlighting (no green for diff + lines)
 
-```
-Claude Code -> Hook (Stop/Notification) -> telegram-hook.py -> Telegram Bot -> User
-User Reply -> Telegram Bot -> telegram-daemon.py -> tmux send-keys -> Claude Code
-```
+### Hook Events
+- `permission_prompt` - contains generic message, read transcript for actual tool details
+- `PreCompact` - triggered before context compaction (auto or manual)
+- Stop hook - Claude finished responding
+- `elicitation_dialog` is MCP-only, not for built-in tools
 
-## Key Findings
+### State Management
+- State in `/tmp/claude-telegram-state.json` with file locking (fcntl)
+- Track pane per message for multi-session support
+- Check for stale prompts by comparing message IDs per pane
 
-### tmux send-keys quirk
+## Testing
 
-When sending text + Enter to Claude Code, they MUST be separate commands:
+To test permission flow:
+1. Start daemon: `./telegram-daemon.py`
+2. Trigger a permission prompt (edit, bash without auto-approve)
+3. Check Telegram for notification with Allow/Deny buttons
+4. Click button, verify action in Claude TUI
 
-```bash
-# Works
-tmux send-keys -t pane "text" && tmux send-keys -t pane Enter
+Debug logs: `/tmp/claude-telegram-hook.log`
 
-# Does NOT work
-tmux send-keys -t pane "text" Enter
-```
-
-The single-command version puts text in the input buffer but Enter doesn't submit. Separating into two commands fixes this.
-
-### Notification hook matchers
-
-| Matcher | Triggers |
-|---------|----------|
-| `permission_prompt` | Claude needs permission for a tool |
-| `idle_prompt` | Claude idle 60+ seconds |
-| Stop hook | Claude finishes responding |
-
-Note: `elicitation_dialog` is for MCP tools only, not built-in tools like AskUserQuestion.
-
-### Permission prompt payload
-
-The `permission_prompt` notification only contains a generic message like "Claude needs your permission to use Bash". To get the actual command/diff, read the transcript file and extract the pending `tool_use` from the last assistant message.
-
-## State Files
-
-- `/tmp/claude-telegram-state.json` - Maps Telegram message IDs to sessions for reply routing (auto-cleaned on reboot)
-- `/tmp/claude-telegram-hook.log` - Debug log for hook invocations
-
-## Known Limitations
-
-- **Diff green coloring**: Telegram Android doesn't render green for `+` lines in diff syntax highlighting - only red `-` lines show color. Desktop works fine. Tested alternatives (`patch`, `udiff`, full git headers) - none work. This is a Telegram Android client limitation (tested v12.2.9).
-- **Raw PTY injection**: TIOCSTI is disabled on modern Linux (`legacy_tiocsti=0`). Would need `sudo sysctl dev.tty.legacy_tiocsti=1` to enable. tmux send-keys is the workaround.
-
-## Notification Features
-
-- Permission prompts include assistant's context message before tool details
-- AskUserQuestion shows the question and answer options
-- Bash shows command + description
-- Edit shows unified diff
-
-## TODO
-
-- [x] Handle multiple Claude sessions (pane-based routing)
+Check state: `jq . /tmp/claude-telegram-state.json`
+Check hooks: `jq .hooks ~/.claude/settings.json`

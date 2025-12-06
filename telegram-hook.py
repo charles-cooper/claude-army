@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Claude Code hook - sends Telegram notifications."""
 
+import datetime
 import difflib
 import fcntl
 import json
 import os
+import requests
 import subprocess
 import sys
 from pathlib import Path
@@ -55,8 +57,9 @@ LOG_FILE = Path("/tmp/claude-telegram-hook.log")
 
 
 def log(msg: str):
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
     with open(LOG_FILE, "a") as f:
-        f.write(f"{msg}\n")
+        f.write(f"[{ts}] {msg}\n")
 
 
 def strip_home(path: str) -> str:
@@ -70,7 +73,7 @@ def format_tool_permission(tool_name: str, tool_input: dict) -> str:
         cmd = tool_input.get("command", "")
         desc = tool_input.get("description", "")
         desc_line = f"\n\n_{desc}_" if desc else ""
-        return f"Claude is asking permission to run:\n\n`{cmd}`{desc_line}"
+        return f"Claude is asking permission to run:\n\n```bash\n{cmd}\n```{desc_line}"
 
     elif tool_name == "Edit":
         fp = strip_home(tool_input.get("file_path", ""))
@@ -119,12 +122,18 @@ def main():
     # Get project path (strip home directory)
     project = cwd.removeprefix(str(Path.home()) + "/")
 
-    # Check if this is a Notification event (has message field) or Stop event (has transcript_path)
+    # Check event type
     context = ""
     notification_type = hook_input.get("notification_type", "")
+    hook_event = hook_input.get("hook_event_name", "")
     transcript_path = hook_input.get("transcript_path", "")
 
-    if notification_type == "permission_prompt":
+    # Handle PreCompact event
+    if hook_event == "PreCompact":
+        trigger = hook_input.get("trigger", "auto")
+        context = f"🔄 Compacting context ({trigger})..."
+
+    elif notification_type == "permission_prompt":
         # Permission prompt - extract pending tool call from transcript
         try:
             lines = Path(transcript_path).read_text().strip().split("\n")
@@ -172,12 +181,27 @@ def main():
             pass
 
     # Send telegram
-    import requests
     msg = f"`{project}`\n\n{context}" if context else f"`{project}`"
+    payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+
+    # Add buttons for permission prompts
+    if notification_type == "permission_prompt":
+        payload["reply_markup"] = {
+            "inline_keyboard": [[
+                {"text": "✓ Allow", "callback_data": "y"},
+                {"text": "✗ Deny", "callback_data": "n"}
+            ]]
+        }
+
+    log("Sending to Telegram...")
     resp = requests.post(
         f"https://api.telegram.org/bot{bot_token}/sendMessage",
-        json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+        json=payload
     )
+    if not resp.ok:
+        log(f"Telegram error: {resp.status_code} {resp.text}")
+    else:
+        log("Sent OK")
 
     if resp.ok:
         msg_id = resp.json().get("result", {}).get("message_id")

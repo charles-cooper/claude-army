@@ -42,6 +42,13 @@ if "Notification" in hooks:
     if not hooks["Notification"]:
         del hooks["Notification"]
 
+# Remove from PreCompact
+if "PreCompact" in hooks:
+    hooks["PreCompact"] = [h for h in hooks["PreCompact"]
+                           if h.get("hooks", [{}])[0].get("command") != "$HOOK_CMD"]
+    if not hooks["PreCompact"]:
+        del hooks["PreCompact"]
+
 if not hooks:
     del settings["hooks"]
 

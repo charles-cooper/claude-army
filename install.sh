@@ -79,10 +79,17 @@ if not any(h.get("hooks", [{}])[0].get("command") == "$HOOK_CMD" for h in stop_h
 
 # Notification hooks
 notif_hooks = hooks.setdefault("Notification", [])
-for matcher in ["permission_prompt", "idle_prompt"]:
+for matcher in ["permission_prompt"]:
     entry = {"matcher": matcher, "hooks": [{"type": "command", "command": "$HOOK_CMD"}]}
     if not any(h.get("matcher") == matcher and h.get("hooks", [{}])[0].get("command") == "$HOOK_CMD" for h in notif_hooks):
         notif_hooks.append(entry)
+
+# PreCompact hooks (auto and manual)
+precompact_hooks = hooks.setdefault("PreCompact", [])
+for matcher in ["auto", "manual"]:
+    entry = {"matcher": matcher, "hooks": [{"type": "command", "command": "$HOOK_CMD"}]}
+    if not any(h.get("matcher") == matcher and h.get("hooks", [{}])[0].get("command") == "$HOOK_CMD" for h in precompact_hooks):
+        precompact_hooks.append(entry)
 
 settings_file.write_text(json.dumps(settings, indent=2))
 print("Hooks installed.")
@@ -111,9 +118,20 @@ else
             "command": "$HOOK_CMD"
           }
         ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOOK_CMD"
+          }
+        ]
       },
       {
-        "matcher": "idle_prompt",
+        "matcher": "manual",
         "hooks": [
           {
             "type": "command",
@@ -132,6 +150,6 @@ echo
 echo "Done! You'll now receive Telegram notifications when:"
 echo "  - Claude stops and waits for input"
 echo "  - Claude asks for permission (Bash, Edit, Write)"
-echo "  - Claude is idle for 60+ seconds"
+echo "  - Claude compacts context (both auto and manual)"
 echo
 echo "Test by running Claude and triggering a permission prompt."

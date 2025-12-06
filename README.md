@@ -6,7 +6,7 @@ Get Telegram notifications when Claude Code needs your attention.
 
 - **Permission prompts**: Notified when Claude asks to run Bash commands, edit files, etc.
 - **Stop events**: Notified when Claude stops and waits for input
-- **Idle prompts**: Notified after 60+ seconds of idle time
+- **Compaction**: Notified when Claude compacts context
 
 For permission prompts, notifications include full context:
 - Bash: command + description
@@ -78,9 +78,20 @@ To get these:
             "command": "python3 /path/to/telegram-hook.py"
           }
         ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/telegram-hook.py"
+          }
+        ]
       },
       {
-        "matcher": "idle_prompt",
+        "matcher": "manual",
         "hooks": [
           {
             "type": "command",
@@ -98,7 +109,7 @@ To get these:
 | Matcher | Triggers when |
 |---------|---------------|
 | `permission_prompt` | Claude needs permission for a tool |
-| `idle_prompt` | Claude idle 60+ seconds waiting for input |
+| `PreCompact` | Claude compacts context (both auto and manual) |
 | Stop hook | Claude stops execution |
 
 ## Files
