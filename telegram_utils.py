@@ -101,22 +101,6 @@ def format_tool_permission(tool_name: str, tool_input: dict) -> str:
         return f"Claude is asking permission to use {tool_name}:\n\n```\n{input_str}\n```"
 
 
-def get_tmux_pane() -> str | None:
-    """Get current tmux pane identifier."""
-    pane = os.environ.get("TMUX_PANE")
-    if pane:
-        try:
-            result = subprocess.run(
-                ["tmux", "display-message", "-p", "#{session_name}:#{window_index}.#{pane_index}"],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except:
-            pass
-    return None
-
-
 def pane_exists(pane: str) -> bool:
     """Check if a tmux pane exists."""
     result = subprocess.run(

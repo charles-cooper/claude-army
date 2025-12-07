@@ -6,10 +6,9 @@ The daemon watches Claude transcript files for permission prompts and sends Tele
 
 **Architecture:**
 - `telegram-daemon.py` - Main daemon, orchestrates transcript watching and Telegram polling
-- `transcript_watcher.py` - Watches transcript files for new tool_use entries
+- `transcript_watcher.py` - Watches transcript files for new tool_use entries and compaction events
 - `telegram_poller.py` - Handles Telegram updates (callbacks, messages)
 - `telegram_utils.py` - Shared utilities (formatting, state, API calls)
-- `telegram-hook.py` - Legacy hook (still works but daemon is faster)
 
 ## Transcript Watching
 
@@ -49,6 +48,22 @@ Tool results appear as:
   }
 }
 ```
+
+Compaction events appear as:
+```json
+{
+  "type": "system",
+  "subtype": "compact_boundary",
+  "content": "Conversation compacted",
+  "compactMetadata": {"trigger": "auto", "preTokens": 155723}
+}
+```
+
+### Skipped Tools
+These tools are never notified (always auto-approved):
+- `BashOutput`
+- `KillShell`
+- `AgentOutputTool`
 
 ## Notifications
 
@@ -186,7 +201,6 @@ Every 5 minutes:
 | `/tmp/claude-telegram-state.json` | Message tracking |
 | `/tmp/claude-telegram-state.lock` | File lock |
 | `/tmp/claude-telegram-daemon.log` | Daemon log |
-| `/tmp/claude-telegram-hook.log` | Hook log (legacy) |
 
 ## Claude Code TUI Behavior
 

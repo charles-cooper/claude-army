@@ -7,8 +7,7 @@ import time
 import requests
 
 from telegram_utils import (
-    read_state, write_state, pane_exists,
-    answer_callback, send_reply, update_message_buttons, log
+    pane_exists, answer_callback, send_reply, update_message_buttons, log
 )
 
 
@@ -279,20 +278,17 @@ class TelegramPoller:
 
         return state
 
-    def process_updates(self, updates: list[dict]) -> None:
-        """Process a list of updates."""
+    def process_updates(self, updates: list[dict], state: dict) -> None:
+        """Process a list of updates. Updates state in-place."""
         if not updates:
             return
 
-        state = read_state()
         for update in updates:
             callback = update.get("callback_query")
             if callback:
-                state = self.handle_callback(callback, state)
+                self.handle_callback(callback, state)
                 continue
 
             msg = update.get("message", {})
             if msg:
-                state = self.handle_message(msg, state)
-
-        write_state(state)
+                self.handle_message(msg, state)

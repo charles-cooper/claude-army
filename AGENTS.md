@@ -18,10 +18,9 @@ This is a Telegram integration for Claude Code that watches transcripts and send
 
 **Main components:**
 - `telegram-daemon.py` - Main daemon, orchestrates everything
-- `transcript_watcher.py` - Watches transcript files for tool_use
+- `transcript_watcher.py` - Watches transcript files for tool_use and compaction events
 - `telegram_poller.py` - Handles Telegram callbacks and messages
 - `telegram_utils.py` - Shared utilities (formatting, state, API)
-- `telegram-hook.py` - Legacy hook (slower, kept for backup)
 
 ## Code Style
 
@@ -55,6 +54,7 @@ This is a Telegram integration for Claude Code that watches transcripts and send
 - State in `/tmp/claude-telegram-state.json` with file locking (fcntl)
 - Track pane per message for multi-session support
 - Check for stale prompts by comparing message IDs per pane
+- PID file at `/tmp/claude-telegram-daemon.pid` - no need to clean up stale files, check_singleton verifies process is running
 
 ## Testing
 

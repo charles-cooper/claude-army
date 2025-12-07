@@ -25,7 +25,7 @@ from telegram_utils import (
     escape_markdown, format_tool_permission, strip_home,
     send_telegram, log, update_message_buttons
 )
-from transcript_watcher import TranscriptManager, PendingTool
+from transcript_watcher import TranscriptManager, PendingTool, CompactionEvent
 from telegram_poller import TelegramPoller
 
 CONFIG_FILE = Path.home() / "telegram.json"
@@ -81,21 +81,55 @@ def cleanup_dead_panes(state: dict) -> dict:
     return live
 
 
-def expire_old_buttons(bot_token: str, chat_id: str, pane: str):
-    """Expire buttons for old messages on this pane."""
-    state = read_state()
-    for msg_id, entry in state.items():
-        if entry.get("pane") == pane and not entry.get("handled"):
-            update_message_buttons(bot_token, chat_id, int(msg_id), "⏰ Expired")
+def expire_old_buttons(bot_token: str, chat_id: str, pane: str, state: dict) -> bool:
+    """Expire buttons for old messages on this pane (if newer exists). Returns True if any expired."""
+    # Find the latest unhandled message for this pane
+    pane_msgs = [(int(mid), e) for mid, e in state.items()
+                 if e.get("pane") == pane and not e.get("handled")]
+    if len(pane_msgs) <= 1:
+        return False  # Nothing to expire
+
+    latest = max(mid for mid, _ in pane_msgs)
+    changed = False
+    for msg_id, entry in pane_msgs:
+        if msg_id < latest:
+            update_message_buttons(bot_token, chat_id, msg_id, "⏰ Expired")
             entry["handled"] = True
-    write_state(state)
+            changed = True
+    return changed
 
 
-def send_notification(bot_token: str, chat_id: str, tool: PendingTool) -> int | None:
-    """Send Telegram notification for a pending tool. Returns message_id."""
-    # Expire old buttons for this pane first
-    expire_old_buttons(bot_token, chat_id, tool.pane)
+def expire_handled_buttons(bot_token: str, chat_id: str, state: dict, transcript_mgr) -> bool:
+    """Expire buttons for tools that were handled in the TUI. Returns True if any expired."""
+    changed = False
+    for msg_id, entry in state.items():
+        if entry.get("handled"):
+            continue
+        tool_use_id = entry.get("tool_use_id")
+        if not tool_use_id:
+            continue
+        # Check if this tool has a result in any watcher
+        transcript_path = entry.get("transcript_path")
+        if transcript_path and transcript_path in transcript_mgr.watchers:
+            watcher = transcript_mgr.watchers[transcript_path]
+            if tool_use_id in watcher.tool_results:
+                update_message_buttons(bot_token, chat_id, int(msg_id), "⏰ Expired")
+                entry["handled"] = True
+                changed = True
+                log(f"Expired (handled in TUI): msg_id={msg_id}")
+    return changed
 
+
+def send_compaction_notification(bot_token: str, chat_id: str, event: CompactionEvent):
+    """Send Telegram notification for a compaction event."""
+    project = strip_home(event.cwd)
+    msg = f"`{project}`\n\n🔄 Context compacted ({event.trigger}, {event.pre_tokens:,} tokens)"
+    send_telegram(bot_token, chat_id, msg)
+    log(f"Notified: compaction ({event.trigger})")
+
+
+def send_notification(bot_token: str, chat_id: str, tool: PendingTool, state: dict) -> int | None:
+    """Send Telegram notification for a pending tool. Returns message_id. Updates state in-place."""
     project = strip_home(tool.cwd)
     prefix = f"{escape_markdown(tool.assistant_text)}\n\n---\n\n" if tool.assistant_text else ""
     tool_desc = format_tool_permission(tool.tool_name, tool.tool_input)
@@ -114,7 +148,6 @@ def send_notification(bot_token: str, chat_id: str, tool: PendingTool) -> int | 
 
     msg_id = result.get("result", {}).get("message_id")
     if msg_id:
-        state = read_state()
         state[str(msg_id)] = {
             "pane": tool.pane,
             "type": "permission_prompt",
@@ -123,7 +156,6 @@ def send_notification(bot_token: str, chat_id: str, tool: PendingTool) -> int | 
             "tool_name": tool.tool_name,
             "cwd": tool.cwd
         }
-        write_state(state)
         log(f"Notified: {tool.tool_name} (msg_id={msg_id}, tool_id={tool.tool_id[:20]}...)")
 
     return msg_id
@@ -170,37 +202,46 @@ def main():
     while True:
         try:
             now = time.time()
+            state_changed = False
 
             # Periodic discovery of new transcripts (every 30 seconds)
             if now - last_discover > 30:
                 transcript_mgr.discover_transcripts()
                 last_discover = now
 
-            # Check transcripts for new tool_use
-            pending_tools = transcript_mgr.check_all()
+            # Check transcripts for new tool_use and compactions
+            pending_tools, compactions = transcript_mgr.check_all()
             for tool in pending_tools:
-                send_notification(bot_token, chat_id, tool)
+                if send_notification(bot_token, chat_id, tool, state):
+                    state_changed = True
+            for event in compactions:
+                send_compaction_notification(bot_token, chat_id, event)
 
             # Process any Telegram updates from background thread
-            while True:
-                try:
-                    updates = update_queue.get_nowait()
-                except queue.Empty:
-                    break
-                telegram_poller.process_updates(updates)
+            while not update_queue.empty():
+                telegram_poller.process_updates(update_queue.get_nowait(), state)
+                state_changed = True  # Assume updates may have changed state
 
-            time.sleep(0.1)
+            # Expire old buttons for all panes
+            for pane in transcript_mgr.pane_to_transcript:
+                if expire_old_buttons(bot_token, chat_id, pane, state):
+                    state_changed = True
 
             # Periodic cleanup (every 5 minutes)
             if now - last_cleanup > CLEANUP_INTERVAL:
-                state = read_state()
                 cleaned = cleanup_dead_panes(state)
                 if len(cleaned) != len(state):
                     log(f"Cleaned {len(state) - len(cleaned)} dead entries")
-                    write_state(cleaned)
+                    state = cleaned
+                    state_changed = True
 
                 transcript_mgr.cleanup_dead()
                 last_cleanup = now
+
+            if state_changed:
+                write_state(state)
+
+            time.sleep(0.1)
 
         except KeyboardInterrupt:
             break

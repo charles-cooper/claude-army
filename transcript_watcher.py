@@ -11,6 +11,9 @@ from telegram_utils import pane_exists, log
 # Delay before notifying - allows tool_result to arrive for auto-accepted tools
 NOTIFY_DELAY = 0.4  # seconds
 
+# Tools that should never notify (internal/auto-approved tools)
+SKIP_TOOLS = {"BashOutput", "KillShell", "AgentOutputTool"}
+
 
 @dataclass
 class PendingTool:
@@ -26,6 +29,15 @@ class PendingTool:
 
 
 @dataclass
+class CompactionEvent:
+    """A context compaction event."""
+    trigger: str  # "auto" or "manual"
+    pre_tokens: int
+    pane: str
+    cwd: str
+
+
+@dataclass
 class TranscriptWatcher:
     """Watches a single transcript file for new tool_use entries."""
     path: str
@@ -35,11 +47,12 @@ class TranscriptWatcher:
     notified_tools: set = field(default_factory=set)
     tool_results: set = field(default_factory=set)
     pending_tools: dict = field(default_factory=dict)  # tool_id -> PendingTool
+    compactions: list = field(default_factory=list)  # Compaction events (notify immediately)
     last_check: float = 0
 
-    def check(self) -> list[PendingTool]:
-        """Check for new pending tools. Returns list of tools ready to notify."""
-        # First, read new lines and update state
+    def check(self) -> tuple[list[PendingTool], list[CompactionEvent]]:
+        """Check for new pending tools and compactions."""
+        # Read new lines and update state
         try:
             with open(self.path, 'r') as f:
                 f.seek(self.position)
@@ -52,25 +65,27 @@ class TranscriptWatcher:
             log(f"Error reading {self.path}: {e}")
         self.last_check = time.time()
 
-        # Now check which pending tools are ready to notify
-        ready = []
+        # Get compaction events
+        compactions = self.compactions
+        self.compactions = []
+
+        # Check which pending tools are ready to notify (after delay)
+        ready_tools = []
         now = time.time()
         done = []
         for tool_id, tool in self.pending_tools.items():
-            # If tool_result arrived, don't notify
             if tool_id in self.tool_results:
                 done.append(tool_id)
                 continue
-            # If enough time passed without tool_result, notify
             if now - tool.detected_at > NOTIFY_DELAY:
-                ready.append(tool)
+                ready_tools.append(tool)
                 self.notified_tools.add(tool_id)
                 done.append(tool_id)
 
         for tool_id in done:
             del self.pending_tools[tool_id]
 
-        return ready
+        return ready_tools, compactions
 
     def _process_line(self, line: str):
         """Process a single transcript line."""
@@ -78,6 +93,18 @@ class TranscriptWatcher:
             entry = json.loads(line)
         except json.JSONDecodeError:
             return  # Partial line
+
+        # Check for compaction event
+        if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary":
+            metadata = entry.get("compactMetadata", {})
+            log(f"Detected: compaction ({metadata.get('trigger', 'unknown')})")
+            self.compactions.append(CompactionEvent(
+                trigger=metadata.get("trigger", "unknown"),
+                pre_tokens=metadata.get("preTokens", 0),
+                pane=self.pane,
+                cwd=self.cwd
+            ))
+            return
 
         # Track tool_results
         if entry.get("type") == "user":
@@ -110,6 +137,10 @@ class TranscriptWatcher:
 
         tool_id = tool_call.get("id", "")
         tool_name = tool_call.get("name", "")
+
+        # Skip internal tools that are always auto-approved
+        if tool_name in SKIP_TOOLS:
+            return
 
         # Skip if already notified or already has result or already pending
         if tool_id in self.notified_tools or tool_id in self.tool_results:
@@ -251,9 +282,12 @@ class TranscriptManager:
                 del self.pane_to_transcript[pane]
             log(f"Stopped watching (pane dead): {path}")
 
-    def check_all(self) -> list[PendingTool]:
-        """Check all watchers for pending tools."""
-        all_pending = []
+    def check_all(self) -> tuple[list[PendingTool], list[CompactionEvent]]:
+        """Check all watchers for pending tools and compactions."""
+        all_tools = []
+        all_compactions = []
         for watcher in self.watchers.values():
-            all_pending.extend(watcher.check())
-        return all_pending
+            tools, compactions = watcher.check()
+            all_tools.extend(tools)
+            all_compactions.extend(compactions)
+        return all_tools, all_compactions
