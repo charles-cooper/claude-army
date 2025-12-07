@@ -175,8 +175,8 @@ def send_compaction_notification(bot_token: str, chat_id: str, event: Compaction
 def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent, state: dict) -> int | None:
     """Send Telegram notification when Claude is waiting for input. Returns message_id."""
     project = strip_home(event.cwd)
-    text = escape_markdown(event.text)
-    msg = f"`{project}`\n\n💬 {text}"
+    # No escaping - let Claude's markdown come through as-is
+    msg = f"`{project}`\n\n💬 {event.text}"
     result = send_telegram(bot_token, chat_id, msg)
     if not result:
         return None
@@ -198,7 +198,8 @@ def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent, state
 def send_notification(bot_token: str, chat_id: str, tool: PendingTool, state: dict) -> int | None:
     """Send Telegram notification for a pending tool. Returns message_id. Updates state in-place."""
     project = strip_home(tool.cwd)
-    prefix = f"{escape_markdown(tool.assistant_text)}\n\n---\n\n" if tool.assistant_text else ""
+    # No escaping for assistant_text - let Claude's markdown come through
+    prefix = f"{tool.assistant_text}\n\n---\n\n" if tool.assistant_text else ""
     tool_desc = format_tool_permission(tool.tool_name, tool.tool_input)
     msg = f"`{project}`\n\n{prefix}{tool_desc}"
 

@@ -45,11 +45,13 @@ def strip_home(path: str) -> str:
 def escape_markdown(text: str) -> str:
     """Escape Telegram markdown special characters in plain text.
 
-    Triple backticks are escaped to prevent code block issues.
-    Single backticks are left alone.
+    For parse_mode="Markdown" (not MarkdownV2):
+    - Only _ and * trigger formatting
+    - [] only matter for links [text](url), don't need escaping
+    - Triple backticks replaced with ''' to avoid code block issues
     """
-    text = text.replace("```", "\\`\\`\\`")
-    for char in ['_', '*', '[', ']']:
+    text = text.replace("```", "'''")
+    for char in ['_', '*']:
         text = text.replace(char, '\\' + char)
     return text
 
@@ -59,8 +61,7 @@ def format_tool_permission(tool_name: str, tool_input: dict) -> str:
     if tool_name == "Bash":
         cmd = tool_input.get("command", "").replace("```", "'''")
         desc = tool_input.get("description", "")
-        desc_escaped = escape_markdown(desc).replace("\\_", "_")
-        desc_line = f"\n\n_{desc_escaped}_" if desc else ""
+        desc_line = f"\n\n_{desc}_" if desc else ""
         return f"Claude is asking permission to run:\n\n```bash\n{cmd}\n```{desc_line}"
 
     elif tool_name == "Edit":
@@ -89,10 +90,10 @@ def format_tool_permission(tool_name: str, tool_input: dict) -> str:
         questions = tool_input.get("questions", [])
         lines = ["Claude is asking:\n"]
         for q in questions:
-            question_text = escape_markdown(q.get('question', '')).replace("\\_", "_").replace("\\*", "*")
+            question_text = q.get('question', '')
             lines.append(f"*{question_text}*\n")
             for opt in q.get("options", []):
-                label = escape_markdown(opt.get('label', ''))
+                label = opt.get('label', '')
                 lines.append(f"â€¢ {label}")
         return "\n".join(lines)
 
@@ -188,7 +189,8 @@ def react_to_message(bot_token: str, chat_id: str, msg_id: int, emoji: str = "ðŸ
 def register_bot_commands(bot_token: str):
     """Register bot commands with Telegram. Raises on failure."""
     commands = [
-        {"command": "debug", "description": "Debug a message (reply to it)"}
+        {"command": "debug", "description": "Debug a message (reply to it)"},
+        {"command": "todo", "description": "Add a todo item for Claude"}
     ]
     resp = requests.post(
         f"https://api.telegram.org/bot{bot_token}/setMyCommands",

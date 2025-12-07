@@ -106,11 +106,12 @@ Permission prompts get three buttons:
 | AskUserQuestion | Questions with options |
 | Other | JSON of input |
 
-### Markdown Escaping
-- `_`, `*`, `[`, `]` escaped with backslash in plain text
-- Triple backticks escaped in plain text
-- Single backticks left alone (inline code)
-- Triple backticks inside code blocks replaced with `'''`
+### Markdown Handling
+For parse_mode="Markdown" (not MarkdownV2):
+- Claude's text output (idle, assistant_text) passed through unmodified
+- Code block content: replace ``` with ''' to avoid breaking message structure
+- `_` and `*` can be escaped with backslash in plain text if needed
+- `[` `]` don't need escaping (only form links when followed by `(url)`)
 
 ## Telegram Polling
 
@@ -229,6 +230,8 @@ Every 5 minutes:
 | `/tmp/claude-telegram-daemon.log` | Daemon log |
 
 ## Bot Commands
+
+Commands registered at startup.
 
 ### Registering Commands
 Commands are registered via the `setMyCommands` API at startup:

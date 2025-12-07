@@ -1,7 +1,5 @@
 """Telegram poller - handles incoming messages and callbacks."""
 
-import datetime
-import json
 import re
 import subprocess
 import time
@@ -12,6 +10,7 @@ from telegram_utils import (
     pane_exists, answer_callback, send_reply, update_message_buttons, log,
     react_to_message
 )
+from bot_commands import CommandHandler
 
 
 def tool_already_handled(transcript_path: str, tool_use_id: str) -> bool:
@@ -71,6 +70,7 @@ def send_text_to_permission_prompt(pane: str, text: str) -> bool:
     """Send text reply to a permission prompt (option 3)."""
     try:
         subprocess.run(["tmux", "send-keys", "-t", pane, "C-u"], check=True)
+        time.sleep(0.02)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
         time.sleep(0.02)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
@@ -133,6 +133,7 @@ class TelegramPoller:
         self.chat_id = chat_id
         self.timeout = timeout
         self.offset = 0
+        self.command_handler = CommandHandler(bot_token, chat_id)
 
     def poll(self) -> list[dict]:
         """Poll for new updates. Returns list of updates."""
@@ -231,70 +232,6 @@ class TelegramPoller:
 
         return state
 
-    def _handle_debug_request(self, msg_id: int, reply_to: int, state: dict):
-        """Handle a debug request - inject debug info into Claude conversation via pane."""
-        log(f"  Debug request for msg_id={reply_to}")
-        reply_to_str = str(reply_to)
-
-        if reply_to_str not in state:
-            # Not in state - send brief reply to Telegram
-            send_reply(self.bot_token, self.chat_id, msg_id,
-                       f"msg_id={reply_to} not in state (deleted or never tracked)")
-            return
-
-        entry = state[reply_to_str]
-        pane = entry.get("pane")
-
-        if not pane or not pane_exists(pane):
-            send_reply(self.bot_token, self.chat_id, msg_id,
-                       f"Pane {pane} not available")
-            return
-
-        # Build debug info to inject into Claude conversation
-        lines = [f"[DEBUG] Telegram msg_id={reply_to}"]
-
-        # Basic info
-        msg_type = entry.get("type", "unknown")
-        lines.append(f"Type: {msg_type}")
-        lines.append(f"Pane: {pane}")
-        lines.append(f"CWD: {entry.get('cwd', 'N/A')}")
-
-        # Timing
-        notified_at = entry.get("notified_at")
-        if notified_at:
-            ts = datetime.datetime.fromtimestamp(notified_at).strftime("%H:%M:%S")
-            elapsed = time.time() - notified_at
-            lines.append(f"Notified: {ts} ({elapsed:.1f}s ago)")
-
-        # Type-specific info
-        if msg_type == "permission_prompt":
-            lines.append(f"Tool: {entry.get('tool_name', 'N/A')}")
-            tool_id = entry.get("tool_use_id", "")
-            lines.append(f"Tool ID: {tool_id}")
-            lines.append(f"Handled: {entry.get('handled', False)}")
-
-            # Check transcript status
-            transcript_path = entry.get("transcript_path")
-            if transcript_path and tool_id:
-                has_result = tool_already_handled(transcript_path, tool_id)
-                lines.append(f"Has result in transcript: {has_result}")
-        elif msg_type == "idle":
-            claude_msg_id = entry.get("claude_msg_id", "")
-            lines.append(f"Claude msg ID: {claude_msg_id}")
-
-        # Full state entry as JSON for complete info
-        lines.append(f"Full state: {json.dumps(entry)}")
-
-        debug_text = "\n".join(lines)
-
-        # Send to pane for Claude to see
-        if send_to_pane(pane, debug_text):
-            react_to_message(self.bot_token, self.chat_id, msg_id)
-            log(f"  Injected debug info into pane {pane}")
-        else:
-            send_reply(self.bot_token, self.chat_id, msg_id, "Failed to send to pane")
-            log(f"  Failed to inject debug info")
-
     def handle_message(self, msg: dict, state: dict) -> dict:
         """Handle a regular message (text reply). Returns updated state."""
         msg_id = msg.get("message_id")
@@ -309,9 +246,8 @@ class TelegramPoller:
         text = msg.get("text", "")
         log(f"  reply_to={reply_to} text={text[:30] if text else None}")
 
-        # Handle debug command - reply with "/debug" to inject debug info into Claude conversation
-        if reply_to and text.strip().lower() in ("/debug", "debug", "?"):
-            self._handle_debug_request(msg_id, reply_to, state)
+        # Handle bot commands (/debug, /todo, etc.)
+        if self.command_handler.handle_command(msg, state):
             return state
 
         if not reply_to or str(reply_to) not in state or not text:
