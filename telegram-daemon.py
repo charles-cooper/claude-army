@@ -99,9 +99,15 @@ def expire_old_buttons(bot_token: str, chat_id: str, pane: str, state: dict) -> 
     return changed
 
 
-def delete_handled_messages(bot_token: str, chat_id: str, state: dict, transcript_mgr) -> list[str]:
-    """Delete messages for tools that were handled (TUI or auto-approved). Returns list of deleted msg_ids."""
-    deleted = []
+# If tool_result arrives within this time, delete notification (quick response)
+# If longer, mark expired (user may want to see what happened)
+QUICK_RESPONSE_THRESHOLD = 4.0  # seconds
+
+
+def handle_completed_tools(bot_token: str, chat_id: str, state: dict, transcript_mgr) -> list[str]:
+    """Handle notifications for tools that completed. Delete if quick, expire if slow. Returns msg_ids to remove from state."""
+    to_remove = []
+    now = time.time()
     for msg_id, entry in list(state.items()):
         if entry.get("handled"):
             continue
@@ -113,12 +119,22 @@ def delete_handled_messages(bot_token: str, chat_id: str, state: dict, transcrip
         if transcript_path and transcript_path in transcript_mgr.watchers:
             watcher = transcript_mgr.watchers[transcript_path]
             if tool_use_id in watcher.tool_results:
-                if delete_message(bot_token, chat_id, int(msg_id)):
-                    log(f"Deleted (handled elsewhere): msg_id={msg_id}")
+                notified_at = entry.get("notified_at", 0)
+                elapsed = now - notified_at if notified_at else 999
+
+                if elapsed < QUICK_RESPONSE_THRESHOLD:
+                    # Quick response - delete notification
+                    if delete_message(bot_token, chat_id, int(msg_id)):
+                        log(f"Deleted (quick response {elapsed:.1f}s): msg_id={msg_id}")
+                    else:
+                        log(f"Failed to delete msg_id={msg_id}")
+                    to_remove.append(msg_id)
                 else:
-                    log(f"Failed to delete msg_id={msg_id}, marking handled")
-                deleted.append(msg_id)
-    return deleted
+                    # Slow response - mark expired so user can see what happened
+                    update_message_buttons(bot_token, chat_id, int(msg_id), "⏰ Expired")
+                    entry["handled"] = True
+                    log(f"Expired (slow response {elapsed:.1f}s): msg_id={msg_id}")
+    return to_remove
 
 
 def send_compaction_notification(bot_token: str, chat_id: str, event: CompactionEvent):
@@ -164,7 +180,8 @@ def send_notification(bot_token: str, chat_id: str, tool: PendingTool, state: di
             "transcript_path": tool.transcript_path,
             "tool_use_id": tool.tool_id,
             "tool_name": tool.tool_name,
-            "cwd": tool.cwd
+            "cwd": tool.cwd,
+            "notified_at": time.time()
         }
         log(f"Notified: {tool.tool_name} (msg_id={msg_id}, tool_id={tool.tool_id[:20]}...)")
 
@@ -234,9 +251,9 @@ def main():
                 telegram_poller.process_updates(update_queue.get_nowait(), state)
                 state_changed = True  # Assume updates may have changed state
 
-            # Delete messages for handled tools, expire old messages
-            deleted = delete_handled_messages(bot_token, chat_id, state, transcript_mgr)
-            for msg_id in deleted:
+            # Handle completed tools (delete quick, expire slow), expire old messages
+            to_remove = handle_completed_tools(bot_token, chat_id, state, transcript_mgr)
+            for msg_id in to_remove:
                 del state[msg_id]
                 state_changed = True
             for pane in transcript_mgr.pane_to_transcript:
