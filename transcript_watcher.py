@@ -12,7 +12,7 @@ from telegram_utils import pane_exists, log
 NOTIFY_DELAY = 0.4  # seconds
 
 # Tools that should never notify (internal/auto-approved tools)
-SKIP_TOOLS = {"BashOutput", "KillShell", "AgentOutputTool"}
+SKIP_TOOLS = {"BashOutput", "KillShell", "AgentOutputTool", "TodoWrite"}
 
 
 @dataclass
@@ -38,6 +38,14 @@ class CompactionEvent:
 
 
 @dataclass
+class IdleEvent:
+    """Claude finished speaking and is waiting for input."""
+    text: str
+    pane: str
+    cwd: str
+
+
+@dataclass
 class TranscriptWatcher:
     """Watches a single transcript file for new tool_use entries."""
     path: str
@@ -48,10 +56,11 @@ class TranscriptWatcher:
     tool_results: set = field(default_factory=set)
     pending_tools: dict = field(default_factory=dict)  # tool_id -> PendingTool
     compactions: list = field(default_factory=list)  # Compaction events (notify immediately)
+    idle_events: list = field(default_factory=list)  # Idle events (notify immediately)
     last_check: float = 0
 
-    def check(self) -> tuple[list[PendingTool], list[CompactionEvent]]:
-        """Check for new pending tools and compactions."""
+    def check(self) -> tuple[list[PendingTool], list[CompactionEvent], list[IdleEvent]]:
+        """Check for new pending tools, compactions, and idle events."""
         # Read new lines and update state
         try:
             with open(self.path, 'r') as f:
@@ -65,9 +74,11 @@ class TranscriptWatcher:
             log(f"Error reading {self.path}: {e}")
         self.last_check = time.time()
 
-        # Get compaction events
+        # Get compaction and idle events
         compactions = self.compactions
         self.compactions = []
+        idle_events = self.idle_events
+        self.idle_events = []
 
         # Check which pending tools are ready to notify (after delay)
         ready_tools = []
@@ -85,7 +96,7 @@ class TranscriptWatcher:
         for tool_id in done:
             del self.pending_tools[tool_id]
 
-        return ready_tools, compactions
+        return ready_tools, compactions, idle_events
 
     def _process_line(self, line: str):
         """Process a single transcript line."""
@@ -122,15 +133,27 @@ class TranscriptWatcher:
         if entry.get("type") != "assistant":
             return
 
+        message = entry.get("message", {})
+        stop_reason = message.get("stop_reason")
         assistant_text = ""
         tool_call = None
 
-        for c in entry.get("message", {}).get("content", []):
+        for c in message.get("content", []):
             if isinstance(c, dict):
                 if c.get("type") == "text":
                     assistant_text = c.get("text", "")
                 elif c.get("type") == "tool_use":
                     tool_call = c
+
+        # Check for idle event (Claude finished speaking, waiting for input)
+        if stop_reason == "end_turn" and assistant_text:
+            log(f"Detected: idle (end_turn with text)")
+            self.idle_events.append(IdleEvent(
+                text=assistant_text,
+                pane=self.pane,
+                cwd=self.cwd
+            ))
+            return
 
         if not tool_call:
             return
@@ -282,12 +305,14 @@ class TranscriptManager:
                 del self.pane_to_transcript[pane]
             log(f"Stopped watching (pane dead): {path}")
 
-    def check_all(self) -> tuple[list[PendingTool], list[CompactionEvent]]:
-        """Check all watchers for pending tools and compactions."""
+    def check_all(self) -> tuple[list[PendingTool], list[CompactionEvent], list[IdleEvent]]:
+        """Check all watchers for pending tools, compactions, and idle events."""
         all_tools = []
         all_compactions = []
+        all_idle = []
         for watcher in self.watchers.values():
-            tools, compactions = watcher.check()
+            tools, compactions, idle_events = watcher.check()
             all_tools.extend(tools)
             all_compactions.extend(compactions)
-        return all_tools, all_compactions
+            all_idle.extend(idle_events)
+        return all_tools, all_compactions, all_idle

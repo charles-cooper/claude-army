@@ -162,3 +162,24 @@ def update_message_buttons(bot_token: str, chat_id: str, msg_id: int, label: str
             "reply_markup": {"inline_keyboard": [[{"text": label, "callback_data": "_"}]]}
         }
     )
+
+
+def delete_message(bot_token: str, chat_id: str, msg_id: int) -> bool:
+    """Delete a message. Returns True if successful."""
+    resp = requests.post(
+        f"https://api.telegram.org/bot{bot_token}/deleteMessage",
+        json={"chat_id": chat_id, "message_id": msg_id}
+    )
+    return resp.ok
+
+
+def react_to_message(bot_token: str, chat_id: str, msg_id: int, emoji: str = "👀"):
+    """React to a message with an emoji."""
+    requests.post(
+        f"https://api.telegram.org/bot{bot_token}/setMessageReaction",
+        json={
+            "chat_id": chat_id,
+            "message_id": msg_id,
+            "reaction": [{"type": "emoji", "emoji": emoji}]
+        }
+    )

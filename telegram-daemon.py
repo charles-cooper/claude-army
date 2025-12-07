@@ -23,9 +23,9 @@ from pathlib import Path
 from telegram_utils import (
     read_state, write_state, pane_exists,
     escape_markdown, format_tool_permission, strip_home,
-    send_telegram, log, update_message_buttons
+    send_telegram, log, update_message_buttons, delete_message
 )
-from transcript_watcher import TranscriptManager, PendingTool, CompactionEvent
+from transcript_watcher import TranscriptManager, PendingTool, CompactionEvent, IdleEvent
 from telegram_poller import TelegramPoller
 
 CONFIG_FILE = Path.home() / "telegram.json"
@@ -99,10 +99,10 @@ def expire_old_buttons(bot_token: str, chat_id: str, pane: str, state: dict) -> 
     return changed
 
 
-def expire_handled_buttons(bot_token: str, chat_id: str, state: dict, transcript_mgr) -> bool:
-    """Expire buttons for tools that were handled in the TUI. Returns True if any expired."""
-    changed = False
-    for msg_id, entry in state.items():
+def delete_handled_messages(bot_token: str, chat_id: str, state: dict, transcript_mgr) -> list[str]:
+    """Delete messages for tools that were handled (TUI or auto-approved). Returns list of deleted msg_ids."""
+    deleted = []
+    for msg_id, entry in list(state.items()):
         if entry.get("handled"):
             continue
         tool_use_id = entry.get("tool_use_id")
@@ -113,11 +113,12 @@ def expire_handled_buttons(bot_token: str, chat_id: str, state: dict, transcript
         if transcript_path and transcript_path in transcript_mgr.watchers:
             watcher = transcript_mgr.watchers[transcript_path]
             if tool_use_id in watcher.tool_results:
-                update_message_buttons(bot_token, chat_id, int(msg_id), "⏰ Expired")
-                entry["handled"] = True
-                changed = True
-                log(f"Expired (handled in TUI): msg_id={msg_id}")
-    return changed
+                if delete_message(bot_token, chat_id, int(msg_id)):
+                    log(f"Deleted (handled elsewhere): msg_id={msg_id}")
+                else:
+                    log(f"Failed to delete msg_id={msg_id}, marking handled")
+                deleted.append(msg_id)
+    return deleted
 
 
 def send_compaction_notification(bot_token: str, chat_id: str, event: CompactionEvent):
@@ -126,6 +127,15 @@ def send_compaction_notification(bot_token: str, chat_id: str, event: Compaction
     msg = f"`{project}`\n\n🔄 Context compacted ({event.trigger}, {event.pre_tokens:,} tokens)"
     send_telegram(bot_token, chat_id, msg)
     log(f"Notified: compaction ({event.trigger})")
+
+
+def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent):
+    """Send Telegram notification when Claude is waiting for input."""
+    project = strip_home(event.cwd)
+    text = escape_markdown(event.text)
+    msg = f"`{project}`\n\n💬 {text}"
+    send_telegram(bot_token, chat_id, msg)
+    log(f"Notified: idle")
 
 
 def send_notification(bot_token: str, chat_id: str, tool: PendingTool, state: dict) -> int | None:
@@ -209,21 +219,25 @@ def main():
                 transcript_mgr.discover_transcripts()
                 last_discover = now
 
-            # Check transcripts for new tool_use and compactions
-            pending_tools, compactions = transcript_mgr.check_all()
+            # Check transcripts for new tool_use, compactions, and idle events
+            pending_tools, compactions, idle_events = transcript_mgr.check_all()
             for tool in pending_tools:
                 if send_notification(bot_token, chat_id, tool, state):
                     state_changed = True
             for event in compactions:
                 send_compaction_notification(bot_token, chat_id, event)
+            for event in idle_events:
+                send_idle_notification(bot_token, chat_id, event)
 
             # Process any Telegram updates from background thread
             while not update_queue.empty():
                 telegram_poller.process_updates(update_queue.get_nowait(), state)
                 state_changed = True  # Assume updates may have changed state
 
-            # Expire buttons for handled tools and old messages
-            if expire_handled_buttons(bot_token, chat_id, state, transcript_mgr):
+            # Delete messages for handled tools, expire old messages
+            deleted = delete_handled_messages(bot_token, chat_id, state, transcript_mgr)
+            for msg_id in deleted:
+                del state[msg_id]
                 state_changed = True
             for pane in transcript_mgr.pane_to_transcript:
                 if expire_old_buttons(bot_token, chat_id, pane, state):

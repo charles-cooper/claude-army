@@ -7,7 +7,8 @@ import time
 import requests
 
 from telegram_utils import (
-    pane_exists, answer_callback, send_reply, update_message_buttons, log
+    pane_exists, answer_callback, send_reply, update_message_buttons, log,
+    react_to_message
 )
 
 
@@ -263,6 +264,7 @@ class TelegramPoller:
                 if send_text_to_permission_prompt(pane, text):
                     log(f"  Sent to permission prompt on pane {pane}: {text[:50]}...")
                     update_message_buttons(self.bot_token, self.chat_id, reply_to, "💬 Replied")
+                    react_to_message(self.bot_token, self.chat_id, msg_id)
                 else:
                     log(f"  Failed (pane {pane} dead)")
             else:
@@ -273,6 +275,7 @@ class TelegramPoller:
             # No pending permission - send as regular input
             if send_to_pane(pane, text):
                 log(f"  Sent to pane {pane}: {text[:50]}...")
+                react_to_message(self.bot_token, self.chat_id, msg_id)
             else:
                 log(f"  Failed (pane {pane} dead)")
 
