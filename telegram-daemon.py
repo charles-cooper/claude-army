@@ -222,7 +222,9 @@ def main():
                 telegram_poller.process_updates(update_queue.get_nowait(), state)
                 state_changed = True  # Assume updates may have changed state
 
-            # Expire old buttons for all panes
+            # Expire buttons for handled tools and old messages
+            if expire_handled_buttons(bot_token, chat_id, state, transcript_mgr):
+                state_changed = True
             for pane in transcript_mgr.pane_to_transcript:
                 if expire_old_buttons(bot_token, chat_id, pane, state):
                     state_changed = True
