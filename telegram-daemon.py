@@ -330,7 +330,7 @@ def send_compaction_notification(bot_token: str, chat_id: str, event: Compaction
 
 def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent, state: State) -> int | None:
     """Send Telegram notification when Claude is waiting for input. Returns message_id."""
-    msg = f"💬 {event.text}"
+    msg = event.text
     result = send_to_chat_or_topic(bot_token, chat_id, event.pane, event.cwd, msg, parse_mode="Markdown")
     if not result:
         return None
