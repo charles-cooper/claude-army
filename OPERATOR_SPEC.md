@@ -408,12 +408,13 @@ Since marker files live in `.claude/` which Claude creates, all registered tasks
 - [x] Message routing to Operator pane
 - [x] Operator response capture and send to Telegram
 
-### Phase 3: Task Management
-- [ ] Spawn worktree task (create worktree, topic, marker, session)
-- [ ] Spawn session (create topic, marker for existing directory)
-- [ ] Auto-register discovered sessions (daemon writes marker)
-- [ ] Notification routing by task (lookup in registry)
-- [ ] Cleanup (worktree vs session behavior)
+### Phase 3: Task Management ✓
+- [x] Spawn worktree task (create worktree, topic, marker, session)
+- [x] Spawn session (create topic, marker for existing directory)
+- [x] Auto-register discovered sessions (daemon writes marker)
+- [x] Notification routing by task (lookup in registry)
+- [x] Cleanup (worktree vs session behavior)
+- [x] Permission warning when bot lacks Manage Topics rights
 
 ### Phase 4: Session Lifecycle
 - [ ] Worker session resurrection on death

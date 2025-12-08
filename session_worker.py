@@ -14,19 +14,13 @@ from pathlib import Path
 
 from telegram_utils import (
     log, edit_forum_topic, create_forum_topic, close_forum_topic,
-    shell_quote
+    shell_quote, TopicCreationError
 )
 from registry import (
     get_config, get_registry, write_marker_file, read_marker_file,
     remove_marker_file
 )
 
-# Status prefixes for topic names
-STATUS_PREFIXES = {
-    "active": "▶️",
-    "paused": "⏸️",
-    "done": "✅",
-}
 
 # Short prefix to avoid collisions with user sessions
 SESSION_PREFIX = "ca-"  # claude-army
@@ -226,11 +220,11 @@ def spawn_worktree_task(repo_path: str, task_name: str, description: str) -> dic
 
     # Create topic
     bot_token = _get_bot_token()
-    topic_result = create_forum_topic(bot_token, str(config.group_id), f"▶️ {task_name}")
-    if not topic_result:
-        log("Failed to create topic")
+    try:
+        topic_result = create_forum_topic(bot_token, str(config.group_id), task_name)
+    except TopicCreationError:
         delete_worktree(repo_path, str(worktree_path))
-        return None
+        raise
 
     topic_id = topic_result.get("message_thread_id")
 
@@ -294,11 +288,7 @@ def spawn_session(directory: str, task_name: str, description: str) -> dict | No
 
     # Create topic
     bot_token = _get_bot_token()
-    topic_result = create_forum_topic(bot_token, str(config.group_id), f"▶️ {task_name}")
-    if not topic_result:
-        log("Failed to create topic")
-        return None
-
+    topic_result = create_forum_topic(bot_token, str(config.group_id), task_name)
     topic_id = topic_result.get("message_thread_id")
 
     # Create tmux session
@@ -339,7 +329,8 @@ def register_existing_session(directory: str, task_name: str) -> dict | None:
     """Register an existing Claude session (auto-registration by daemon).
 
     Creates topic and marker for a discovered session.
-    Returns task_data dict on success, None on failure.
+    Returns task_data dict on success, None if not configured or name collision.
+    Raises TopicCreationError if topic creation fails.
     """
     config = get_config()
     if not config.is_configured():
@@ -351,12 +342,9 @@ def register_existing_session(directory: str, task_name: str) -> dict | None:
     if registry.get_task(task_name):
         return None
 
-    # Create topic
+    # Create topic (raises TopicCreationError on failure)
     bot_token = _get_bot_token()
-    topic_result = create_forum_topic(bot_token, str(config.group_id), f"▶️ {task_name}")
-    if not topic_result:
-        return None
-
+    topic_result = create_forum_topic(bot_token, str(config.group_id), task_name)
     topic_id = topic_result.get("message_thread_id")
 
     # Write marker file (session already exists, we don't create tmux session)

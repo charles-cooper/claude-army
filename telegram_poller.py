@@ -300,35 +300,28 @@ class TelegramPoller:
                 return
 
         config = get_config()
-        chat_type = msg.get("chat", {}).get("type")
+        if not config.is_configured():
+            log(f"  Skipping: not configured")
+            return
 
-        # Route DMs to operator (same as General topic)
-        if chat_type == "private":
-            if not config.is_configured():
-                send_reply(self.bot_token, chat_id, msg_id,
-                    "Claude Army not set up. Use /setup in a group to configure.")
-                return
+        # Route DMs to operator
+        if msg.get("chat", {}).get("type") == "private":
             if text:
                 formatted = self._format_incoming_message(msg)
                 if send_to_operator(formatted):
                     react_to_message(self.bot_token, chat_id, msg_id)
                     log(f"  Routed DM to operator")
-                else:
-                    send_reply(self.bot_token, chat_id, msg_id,
-                        "Failed to reach operator. Check: tmux has-session -t ca-op")
-                    log(f"  Failed to route DM to operator")
             return
 
-        # For group messages, check chat is configured group or fallback chat_id
-        expected_chat = str(config.group_id) if config.is_configured() else self.chat_id
-        if chat_id != expected_chat:
+        # Must be correct group
+        if chat_id != str(config.group_id):
             log(f"  Skipping: wrong chat")
             return
 
         # Route General topic messages to operator
         # In forums, General topic may have topic_id=None or topic_id=1
         is_general = topic_id is None or topic_id == config.general_topic_id
-        if config.is_configured() and is_general:
+        if is_general:
             if text:
                 formatted = self._format_incoming_message(msg)
                 if send_to_operator(formatted):
@@ -343,7 +336,7 @@ class TelegramPoller:
             if text:
                 formatted = self._format_incoming_message(msg)
                 if send_to_worker(topic_id, formatted):
-                    react_to_message(self.bot_token, self.chat_id, msg_id)
+                    react_to_message(self.bot_token, chat_id, msg_id)
                     log(f"  Routed to worker for topic {topic_id}")
                 else:
                     log(f"  Failed to route to worker")
@@ -369,20 +362,20 @@ class TelegramPoller:
                 # User is replying to the pending permission
                 if send_text_to_permission_prompt(pane, text):
                     log(f"  Sent to permission prompt on pane {pane}: {text[:50]}...")
-                    update_message_buttons(self.bot_token, self.chat_id, reply_to, "💬 Replied")
+                    update_message_buttons(self.bot_token, chat_id, reply_to, "💬 Replied")
                     self.state.update(str(reply_to), handled=True)
-                    react_to_message(self.bot_token, self.chat_id, msg_id)
+                    react_to_message(self.bot_token, chat_id, msg_id)
                 else:
                     log(f"  Failed (pane {pane} dead)")
             else:
                 # Block: there's a different pending permission
                 log(f"  Blocked: transcript has pending tool ({pending_tool_id[:20]}...), reply to that first")
-                send_reply(self.bot_token, self.chat_id, msg_id, "⚠️ Ignored: there's a pending permission prompt. Please respond to that first.")
+                send_reply(self.bot_token, chat_id, msg_id, "⚠️ Ignored: there's a pending permission prompt. Please respond to that first.")
         else:
             # No pending permission - send as regular input
             if send_to_pane(pane, text):
                 log(f"  Sent to pane {pane}: {text[:50]}...")
-                react_to_message(self.bot_token, self.chat_id, msg_id)
+                react_to_message(self.bot_token, chat_id, msg_id)
             else:
                 log(f"  Failed (pane {pane} dead)")
 

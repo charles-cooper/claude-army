@@ -15,6 +15,16 @@ def shell_quote(s: str) -> str:
     """Quote a string for safe shell use."""
     return shlex.quote(s)
 
+
+class TopicCreationError(Exception):
+    """Failed to create Telegram topic."""
+    pass
+
+
+class NoTopicRightsError(TopicCreationError):
+    """Bot lacks permission to create topics."""
+    pass
+
 _log_lock = threading.Lock()
 
 
@@ -280,8 +290,8 @@ def is_forum_enabled(bot_token: str, chat_id: str) -> bool:
     return chat.get("is_forum", False)
 
 
-def create_forum_topic(bot_token: str, chat_id: str, name: str, icon_color: int = None) -> dict | None:
-    """Create a forum topic. Returns topic info on success, None on error.
+def create_forum_topic(bot_token: str, chat_id: str, name: str, icon_color: int = None) -> dict:
+    """Create a forum topic. Returns topic info. Raises TopicCreationError on failure.
 
     icon_color options: 0x6FB9F0 (blue), 0xFFD67E (yellow), 0xCB86DB (purple),
                         0x8EEE98 (green), 0xFF93B2 (pink), 0xFB6F5F (red)
@@ -296,7 +306,9 @@ def create_forum_topic(bot_token: str, chat_id: str, name: str, icon_color: int 
     )
     if not resp.ok:
         log(f"Failed to create topic '{name}': {resp.text}")
-        return None
+        if "not enough rights" in resp.text:
+            raise NoTopicRightsError(resp.text)
+        raise TopicCreationError(resp.text)
     return resp.json().get("result")
 
 

@@ -24,7 +24,7 @@ from telegram_utils import (
     State, pane_exists,
     format_tool_permission, strip_home, escape_markdown_v2,
     send_telegram, send_to_topic, log, update_message_buttons, delete_message,
-    register_bot_commands
+    register_bot_commands, NoTopicRightsError, TopicCreationError
 )
 from transcript_watcher import TranscriptManager, PendingTool, CompactionEvent, IdleEvent
 from telegram_poller import TelegramPoller
@@ -36,6 +36,49 @@ CONFIG_FILE = Path.home() / "telegram.json"
 PID_FILE = Path("/tmp/claude-telegram-daemon.pid")
 
 CLEANUP_INTERVAL = 300  # 5 minutes
+
+# Track if we've warned about permissions (avoid spam)
+_permission_warning_sent = False
+
+
+def try_auto_register(cwd: str, pane: str, bot_token: str, group_id: str) -> dict | None:
+    """Try to auto-register a session. Returns task_data or None. Sends permission warning if needed."""
+    global _permission_warning_sent
+
+    registry = get_registry()
+
+    # Generate unique name
+    task_name = Path(cwd).name
+    base_name = task_name
+    counter = 1
+    while registry.get_task(task_name):
+        task_name = f"{base_name}-{counter}"
+        counter += 1
+
+    try:
+        task_data = register_existing_session(cwd, task_name)
+        if task_data:
+            task_data["pane"] = pane
+            registry.add_task(task_name, task_data)
+            log(f"Auto-registered session: {task_name}")
+            return task_data
+    except NoTopicRightsError:
+        if not _permission_warning_sent:
+            _permission_warning_sent = True
+            msg = (
+                "⚠️ *Cannot create topics*\n\n"
+                "Bot needs admin rights with _Manage Topics_ permission.\n\n"
+                "Group Settings → Administrators → Bot → Enable *Manage Topics*"
+            )
+            result = send_telegram(bot_token, group_id, msg)
+            if result:
+                log("Sent permission warning to group")
+            else:
+                log("Failed to send permission warning")
+    except TopicCreationError as e:
+        log(f"Failed to auto-register {task_name}: {e}")
+
+    return None
 
 
 class DaemonAlreadyRunning(Exception):
@@ -228,19 +271,8 @@ def send_to_chat_or_topic(bot_token: str, chat_id: str, pane: str, cwd: str, msg
             return send_to_topic(bot_token, group_id, topic_id, msg, reply_markup, parse_mode)
 
     # 4. Unmanaged -> auto-register
-    task_name = Path(cwd).name
-    # Ensure uniqueness
-    base_name = task_name
-    counter = 1
-    while registry.get_task(task_name):
-        task_name = f"{base_name}-{counter}"
-        counter += 1
-
-    task_data = register_existing_session(cwd, task_name)
+    task_data = try_auto_register(cwd, pane, bot_token, group_id)
     if task_data:
-        task_data["pane"] = pane
-        registry.add_task(task_name, task_data)
-        log(f"Auto-registered session: {task_name}")
         topic_id = task_data.get("topic_id")
         if topic_id:
             return send_to_topic(bot_token, group_id, topic_id, msg, reply_markup, parse_mode)
@@ -248,6 +280,35 @@ def send_to_chat_or_topic(bot_token: str, chat_id: str, pane: str, cwd: str, msg
     # 5. Auto-registration failed -> General topic for debugging
     log(f"Auto-registration failed for {cwd}, falling back to General")
     return send_to_topic(bot_token, group_id, config.general_topic_id, msg, reply_markup, parse_mode)
+
+
+def auto_register_discovered_sessions(bot_token: str, chat_id: str, transcript_mgr):
+    """Auto-register newly discovered sessions that aren't in registry."""
+    config = get_config()
+    if not config.is_configured():
+        return
+
+    registry = get_registry()
+    group_id = str(config.group_id)
+
+    for transcript_path, watcher in transcript_mgr.watchers.items():
+        cwd = watcher.cwd
+        pane = watcher.pane
+
+        # Skip operator pane
+        if is_operator_pane(pane):
+            continue
+
+        # Skip if already known by path
+        if registry.find_task_by_path(cwd):
+            continue
+
+        # Skip if marker exists (will be recovered on first notification)
+        if is_managed_directory(cwd):
+            continue
+
+        # Auto-register this session
+        try_auto_register(cwd, pane, bot_token, group_id)
 
 
 def send_compaction_notification(bot_token: str, chat_id: str, event: CompactionEvent):
@@ -351,6 +412,7 @@ def main():
     # Bootstrap from state and discover transcripts
     transcript_mgr.add_from_state(state.data)
     transcript_mgr.discover_transcripts()
+    auto_register_discovered_sessions(bot_token, chat_id, transcript_mgr)
 
     last_cleanup = time.time()
     last_discover = time.time()
@@ -364,6 +426,7 @@ def main():
             # Periodic discovery of new transcripts (every 30 seconds)
             if now - last_discover > 30:
                 transcript_mgr.discover_transcripts()
+                auto_register_discovered_sessions(bot_token, chat_id, transcript_mgr)
                 last_discover = now
 
             # Check transcripts for new tool_use, compactions, and idle events
