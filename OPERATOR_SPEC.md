@@ -153,6 +153,8 @@ Each task topic has a pinned message:
 - Receives all messages from General topic
 - Interprets user intent (natural language)
 - Manages tasks (spawn, status, cleanup)
+- **Manages todo queue** - receives todos from any topic, decides routing/priority
+- **Updates AGENTS.md** - observes repeated difficulties across workers, updates project AGENTS.md with learnings
 - Goes through permission prompts for actions
 
 ### Example Interactions
@@ -283,13 +285,15 @@ def handle_general_topic_message(message):
 
 ## Commands
 
-### Bot Commands (in General topic)
+### Bot Commands (any topic)
 
 | Command | Description |
 |---------|-------------|
 | `/setup` | Initialize group as Claude Army control center |
 | `/reset` | Remove configuration (allows setup elsewhere) |
 | `/help` | Show available commands |
+| `/todo <item>` | Add todo to Operator's queue (from any topic) |
+| `/debug` | Debug a notification (reply to it) |
 
 ### Natural Language (via Operator Claude)
 
@@ -298,6 +302,11 @@ def handle_general_topic_message(message):
 - "Pause the feature-x task"
 - "Clean up completed tasks"
 - "List all repos"
+
+**Routing rules:**
+- `/todo` and `/debug` always route to the Operator, even from task topics
+- When user replies to a message, the replied-to message (with Telegram metadata like msg_id, topic, timestamp) is included as context
+- The Operator manages the todo queue and decides which worker (if any) should handle each item
 
 ## Registry Recovery
 

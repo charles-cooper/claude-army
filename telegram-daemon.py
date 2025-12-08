@@ -23,11 +23,13 @@ from pathlib import Path
 from telegram_utils import (
     State, pane_exists,
     format_tool_permission, strip_home, escape_markdown_v2,
-    send_telegram, log, update_message_buttons, delete_message,
+    send_telegram, send_to_topic, log, update_message_buttons, delete_message,
     register_bot_commands
 )
 from transcript_watcher import TranscriptManager, PendingTool, CompactionEvent, IdleEvent
 from telegram_poller import TelegramPoller
+from registry import get_config
+from session_operator import is_operator_pane, check_and_resurrect_operator
 
 CONFIG_FILE = Path.home() / "telegram.json"
 PID_FILE = Path("/tmp/claude-telegram-daemon.pid")
@@ -167,13 +169,23 @@ def handle_completed_tools(bot_token: str, chat_id: str, state: State, transcrip
                     log(f"Expired (slow response {elapsed:.1f}s): msg_id={msg_id}")
 
 
+def send_to_chat_or_topic(bot_token: str, chat_id: str, pane: str, msg: str,
+                          reply_markup: dict = None, parse_mode: str = "MarkdownV2") -> dict | None:
+    """Send message to appropriate destination based on pane type."""
+    config = get_config()
+    if config.is_configured() and is_operator_pane(pane):
+        return send_to_topic(bot_token, str(config.group_id), config.general_topic_id,
+                            msg, reply_markup, parse_mode)
+    return send_telegram(bot_token, chat_id, msg, None, reply_markup, parse_mode)
+
+
 def send_compaction_notification(bot_token: str, chat_id: str, event: CompactionEvent):
     """Send Telegram notification for a compaction event."""
     project = escape_markdown_v2(strip_home(event.cwd))
     trigger = escape_markdown_v2(event.trigger)
     tokens = escape_markdown_v2(f"{event.pre_tokens:,}")
     msg = f"`{project}`\n\n🔄 Context compacted \\({trigger}, {tokens} tokens\\)"
-    send_telegram(bot_token, chat_id, msg, parse_mode="MarkdownV2")
+    send_to_chat_or_topic(bot_token, chat_id, event.pane, msg)
     log(f"Notified: compaction ({event.trigger})")
 
 
@@ -182,7 +194,7 @@ def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent, state
     project = escape_markdown_v2(strip_home(event.cwd))
     text = escape_markdown_v2(event.text)
     msg = f"`{project}`\n\n💬 {text}"
-    result = send_telegram(bot_token, chat_id, msg, parse_mode="MarkdownV2")
+    result = send_to_chat_or_topic(bot_token, chat_id, event.pane, msg)
     if not result:
         return None
     msg_id = result.get("result", {}).get("message_id")
@@ -215,7 +227,7 @@ def send_notification(bot_token: str, chat_id: str, tool: PendingTool, state: St
         ]]
     }
 
-    result = send_telegram(bot_token, chat_id, msg, tool.tool_name, reply_markup, parse_mode="MarkdownV2")
+    result = send_to_chat_or_topic(bot_token, chat_id, tool.pane, msg, reply_markup)
     if not result:
         return None
 
@@ -244,6 +256,9 @@ def main():
 
     log(f"Starting daemon (PID {os.getpid()})...")
     register_bot_commands(bot_token)
+
+    # Resurrect operator if configured
+    check_and_resurrect_operator()
 
     # Initialize components
     state = State()

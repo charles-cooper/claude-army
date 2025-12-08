@@ -11,6 +11,8 @@ from telegram_utils import (
     react_to_message
 )
 from bot_commands import CommandHandler
+from registry import get_config
+from session_operator import send_to_operator
 
 
 def tool_already_handled(transcript_path: str, tool_use_id: str) -> bool:
@@ -252,11 +254,40 @@ class TelegramPoller:
                 answer_callback(self.bot_token, cb_id, "Failed")
                 log(f"  Failed (pane {pane} dead)")
 
+    def _format_message_for_operator(self, msg: dict) -> str:
+        """Format a Telegram message with context for the operator."""
+        text = msg.get("text", "")
+        topic_id = msg.get("message_thread_id")
+        msg_id = msg.get("message_id")
+        from_user = msg.get("from", {}).get("first_name", "Unknown")
+
+        lines = [f"[Telegram msg_id={msg_id} from={from_user}]"]
+        if topic_id:
+            lines[0] = f"[Telegram msg_id={msg_id} topic={topic_id} from={from_user}]"
+
+        # Include reply context if present
+        reply_to = msg.get("reply_to_message")
+        if reply_to:
+            reply_msg_id = reply_to.get("message_id")
+            reply_text = reply_to.get("text", "")[:200]
+            reply_from = reply_to.get("from", {}).get("first_name", "Unknown")
+            lines.append(f"[Replying to msg_id={reply_msg_id} from {reply_from}]: {reply_text}")
+
+            # Add state info if we have it
+            reply_str = str(reply_msg_id)
+            if reply_str in self.state:
+                entry = self.state.get(reply_str)
+                lines.append(f"[State: type={entry.get('type')}, pane={entry.get('pane')}]")
+
+        lines.append(text)
+        return "\n".join(lines)
+
     def handle_message(self, msg: dict):
         """Handle a regular message (text reply)."""
         msg_id = msg.get("message_id")
         chat_id = str(msg.get("chat", {}).get("id"))
-        log(f"Message: msg_id={msg_id}")
+        topic_id = msg.get("message_thread_id")
+        log(f"Message: msg_id={msg_id} topic={topic_id}")
 
         if chat_id != self.chat_id:
             log(f"  Skipping: wrong chat")
@@ -268,6 +299,18 @@ class TelegramPoller:
 
         # Handle bot commands (/debug, /todo, etc.)
         if self.command_handler.handle_command(msg):
+            return
+
+        # Route General topic messages to operator
+        config = get_config()
+        if config.is_configured() and topic_id == config.general_topic_id:
+            if text:
+                formatted = self._format_message_for_operator(msg)
+                if send_to_operator(formatted):
+                    react_to_message(self.bot_token, self.chat_id, msg_id)
+                    log(f"  Routed to operator")
+                else:
+                    log(f"  Failed to route to operator")
             return
 
         if not reply_to or str(reply_to) not in self.state or not text:
