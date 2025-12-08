@@ -28,9 +28,9 @@ from telegram_utils import (
 )
 from transcript_watcher import TranscriptManager, PendingTool, CompactionEvent, IdleEvent
 from telegram_poller import TelegramPoller
-from registry import get_config
+from registry import get_config, get_registry, is_managed_directory
 from session_operator import is_operator_pane
-from session_worker import is_worker_pane
+from session_worker import is_worker_pane, register_existing_session
 
 CONFIG_FILE = Path.home() / "telegram.json"
 PID_FILE = Path("/tmp/claude-telegram-daemon.pid")
@@ -170,26 +170,84 @@ def handle_completed_tools(bot_token: str, chat_id: str, state: State, transcrip
                     log(f"Expired (slow response {elapsed:.1f}s): msg_id={msg_id}")
 
 
-def send_to_chat_or_topic(bot_token: str, chat_id: str, pane: str, msg: str,
+def send_to_chat_or_topic(bot_token: str, chat_id: str, pane: str, cwd: str, msg: str,
                           reply_markup: dict = None, parse_mode: str = "MarkdownV2") -> dict | None:
-    """Send message to appropriate destination based on pane type."""
+    """Send message to appropriate destination based on pane/cwd.
+
+    Routing priority:
+    1. Operator pane → General topic
+    2. Known task (by path) → task topic
+    3. Managed directory (marker exists) → recover to registry, use topic
+    4. Unmanaged → auto-register, create topic
+    5. Auto-registration failed → General topic (for debugging)
+    """
     config = get_config()
     if not config.is_configured():
         return send_telegram(bot_token, chat_id, msg, None, reply_markup, parse_mode)
 
-    # Operator pane -> General topic
+    group_id = str(config.group_id)
+
+    # 1. Operator pane -> General topic
     if is_operator_pane(pane):
-        return send_to_topic(bot_token, str(config.group_id), config.general_topic_id,
+        return send_to_topic(bot_token, group_id, config.general_topic_id,
                             msg, reply_markup, parse_mode)
 
-    # Worker pane -> task topic
-    is_worker, topic_id = is_worker_pane(pane)
-    if is_worker and topic_id:
-        return send_to_topic(bot_token, str(config.group_id), topic_id,
-                            msg, reply_markup, parse_mode)
+    registry = get_registry()
 
-    # Default: send to configured chat
-    return send_telegram(bot_token, chat_id, msg, None, reply_markup, parse_mode)
+    # 2. Known task by path -> task topic
+    result = registry.find_task_by_path(cwd)
+    if result:
+        task_name, task_data = result
+        # Update pane if changed
+        if task_data.get("pane") != pane:
+            task_data["pane"] = pane
+            registry.add_task(task_name, task_data)
+        topic_id = task_data.get("topic_id")
+        if topic_id:
+            return send_to_topic(bot_token, group_id, topic_id, msg, reply_markup, parse_mode)
+
+    # 3. Managed directory (marker exists but not in registry) -> recover
+    from registry import read_marker_file
+    marker = read_marker_file(cwd)
+    if marker:
+        task_name = marker.get("name")
+        topic_id = marker.get("topic_id")
+        if task_name and topic_id:
+            # Recover to registry
+            task_data = {
+                "type": marker.get("type", "session"),
+                "path": cwd,
+                "topic_id": topic_id,
+                "pane": pane,
+                "status": "active",
+            }
+            if marker.get("repo"):
+                task_data["repo"] = marker["repo"]
+            registry.add_task(task_name, task_data)
+            log(f"Recovered task from marker: {task_name}")
+            return send_to_topic(bot_token, group_id, topic_id, msg, reply_markup, parse_mode)
+
+    # 4. Unmanaged -> auto-register
+    task_name = Path(cwd).name
+    # Ensure uniqueness
+    base_name = task_name
+    counter = 1
+    while registry.get_task(task_name):
+        task_name = f"{base_name}-{counter}"
+        counter += 1
+
+    task_data = register_existing_session(cwd, task_name)
+    if task_data:
+        task_data["pane"] = pane
+        registry.add_task(task_name, task_data)
+        log(f"Auto-registered session: {task_name}")
+        topic_id = task_data.get("topic_id")
+        if topic_id:
+            return send_to_topic(bot_token, group_id, topic_id, msg, reply_markup, parse_mode)
+
+    # 5. Auto-registration failed -> General topic for debugging
+    log(f"Auto-registration failed for {cwd}, falling back to General")
+    return send_to_topic(bot_token, group_id, config.general_topic_id, msg, reply_markup, parse_mode)
 
 
 def send_compaction_notification(bot_token: str, chat_id: str, event: CompactionEvent):
@@ -198,7 +256,7 @@ def send_compaction_notification(bot_token: str, chat_id: str, event: Compaction
     trigger = escape_markdown_v2(event.trigger)
     tokens = escape_markdown_v2(f"{event.pre_tokens:,}")
     msg = f"`{project}`\n\n🔄 Context compacted \\({trigger}, {tokens} tokens\\)"
-    send_to_chat_or_topic(bot_token, chat_id, event.pane, msg)
+    send_to_chat_or_topic(bot_token, chat_id, event.pane, event.cwd, msg)
     log(f"Notified: compaction ({event.trigger})")
 
 
@@ -207,7 +265,7 @@ def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent, state
     project = escape_markdown_v2(strip_home(event.cwd))
     text = escape_markdown_v2(event.text)
     msg = f"`{project}`\n\n💬 {text}"
-    result = send_to_chat_or_topic(bot_token, chat_id, event.pane, msg)
+    result = send_to_chat_or_topic(bot_token, chat_id, event.pane, event.cwd, msg)
     if not result:
         return None
     msg_id = result.get("result", {}).get("message_id")
@@ -240,7 +298,7 @@ def send_notification(bot_token: str, chat_id: str, tool: PendingTool, state: St
         ]]
     }
 
-    result = send_to_chat_or_topic(bot_token, chat_id, tool.pane, msg, reply_markup)
+    result = send_to_chat_or_topic(bot_token, chat_id, tool.pane, tool.cwd, msg, reply_markup)
     if not result:
         return None
 

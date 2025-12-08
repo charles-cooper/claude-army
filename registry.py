@@ -7,7 +7,7 @@ from typing import Any
 CLAUDE_ARMY_DIR = Path(__file__).parent / "operator"
 CONFIG_FILE = CLAUDE_ARMY_DIR / "config.json"
 REGISTRY_FILE = CLAUDE_ARMY_DIR / "registry.json"
-MARKER_FILE_NAME = ".claude-army-task"
+MARKER_FILE_NAME = "army.json"  # Lives inside .claude/ directory
 
 
 def ensure_dir():
@@ -34,13 +34,37 @@ def _write_json(path: Path, data: dict):
 # ============ Config (persistent settings) ============
 
 class Config:
-    """Persistent configuration (bot settings, group ID, etc.)."""
+    """Persistent configuration (bot settings, group ID, etc.).
+
+    Auto-reloads from disk when file is modified externally.
+    NOTE: This mtime-based reload is a bit hacky - the daemon and operator
+    session both use this singleton, and we need the daemon to see updates
+    made by the operator. May need a cleaner solution (e.g., file watch,
+    explicit reload signal) if this causes issues.
+    """
 
     def __init__(self):
-        self._data = _read_json(CONFIG_FILE)
+        self._config_cache = _read_json(CONFIG_FILE)
+        self._mtime = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else 0
+
+    @property
+    def _data(self) -> dict:
+        """Access data, reloading from disk if file changed."""
+        try:
+            mtime = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else 0
+            if mtime > self._mtime:
+                self._config_cache = _read_json(CONFIG_FILE)
+                self._mtime = mtime
+        except OSError:
+            pass
+        return self._config_cache
 
     def _flush(self):
-        _write_json(CONFIG_FILE, self._data)
+        _write_json(CONFIG_FILE, self._config_cache)
+        try:
+            self._mtime = CONFIG_FILE.stat().st_mtime
+        except OSError:
+            pass
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
@@ -87,119 +111,118 @@ class Config:
 
     def clear(self):
         """Clear all configuration."""
-        self._data = {}
+        self._config_cache = {}
         self._flush()
 
 
 # ============ Registry (cache, rebuildable) ============
 
 class Registry:
-    """Cache of tasks and repos. Can be rebuilt from marker files."""
+    """Cache of tasks. Can be rebuilt from .claude/army.json marker files.
+
+    Flat structure: tasks keyed by name, each with type, path, topic_id, etc.
+    """
 
     def __init__(self):
         self._data = _read_json(REGISTRY_FILE)
-        if "repos" not in self._data:
-            self._data["repos"] = {}
+        if "tasks" not in self._data:
+            self._data["tasks"] = {}
 
     def _flush(self):
         _write_json(REGISTRY_FILE, self._data)
 
     @property
-    def repos(self) -> dict:
-        """Get all registered repos."""
-        return self._data.get("repos", {})
+    def tasks(self) -> dict:
+        """Get all tasks."""
+        return self._data.get("tasks", {})
 
-    def add_repo(self, repo_path: str, worktree_base: str = "trees"):
-        """Register a new repo."""
-        if repo_path not in self._data["repos"]:
-            self._data["repos"][repo_path] = {
-                "worktree_base": worktree_base,
-                "tasks": {}
-            }
-            self._flush()
-
-    def remove_repo(self, repo_path: str):
-        """Remove a repo from registry."""
-        if repo_path in self._data["repos"]:
-            del self._data["repos"][repo_path]
-            self._flush()
-
-    def add_task(self, repo_path: str, task_name: str, task_data: dict):
-        """Add a task to a repo."""
-        if repo_path not in self._data["repos"]:
-            self.add_repo(repo_path)
-        self._data["repos"][repo_path]["tasks"][task_name] = task_data
+    def add_task(self, name: str, task_data: dict):
+        """Add or update a task."""
+        self._data["tasks"][name] = task_data
         self._flush()
 
-    def get_task(self, repo_path: str, task_name: str) -> dict | None:
-        """Get task data."""
-        repo = self._data["repos"].get(repo_path)
-        if not repo:
-            return None
-        return repo.get("tasks", {}).get(task_name)
+    def get_task(self, name: str) -> dict | None:
+        """Get task data by name."""
+        return self._data["tasks"].get(name)
 
-    def remove_task(self, repo_path: str, task_name: str):
+    def remove_task(self, name: str):
         """Remove a task from registry."""
-        repo = self._data["repos"].get(repo_path)
-        if repo and task_name in repo.get("tasks", {}):
-            del repo["tasks"][task_name]
+        if name in self._data["tasks"]:
+            del self._data["tasks"][name]
             self._flush()
 
-    def get_all_tasks(self) -> list[tuple[str, str, dict]]:
-        """Get all tasks as list of (repo_path, task_name, task_data)."""
-        tasks = []
-        for repo_path, repo_data in self._data["repos"].items():
-            for task_name, task_data in repo_data.get("tasks", {}).items():
-                tasks.append((repo_path, task_name, task_data))
-        return tasks
+    def get_all_tasks(self) -> list[tuple[str, dict]]:
+        """Get all tasks as list of (name, task_data)."""
+        return list(self._data["tasks"].items())
 
-    def find_task_by_topic(self, topic_id: int) -> tuple[str, str, dict] | None:
+    def find_task_by_topic(self, topic_id: int) -> tuple[str, dict] | None:
         """Find task by topic ID."""
-        for repo_path, repo_data in self._data["repos"].items():
-            for task_name, task_data in repo_data.get("tasks", {}).items():
-                if task_data.get("topic_id") == topic_id:
-                    return (repo_path, task_name, task_data)
+        for name, task_data in self._data["tasks"].items():
+            if task_data.get("topic_id") == topic_id:
+                return (name, task_data)
+        return None
+
+    def find_task_by_path(self, path: str) -> tuple[str, dict] | None:
+        """Find task by directory path."""
+        for name, task_data in self._data["tasks"].items():
+            if task_data.get("path") == path:
+                return (name, task_data)
+        return None
+
+    def find_task_by_pane(self, pane: str) -> tuple[str, dict] | None:
+        """Find task by tmux pane."""
+        for name, task_data in self._data["tasks"].items():
+            if task_data.get("pane") == pane:
+                return (name, task_data)
         return None
 
     def clear(self):
         """Clear all registry data."""
-        self._data = {"repos": {}}
+        self._data = {"tasks": {}}
         self._flush()
 
 
 # ============ Marker Files ============
 
-def get_marker_path(worktree_path: str) -> Path:
-    """Get path to marker file in worktree."""
-    return Path(worktree_path) / MARKER_FILE_NAME
+def get_marker_path(directory: str) -> Path:
+    """Get path to marker file (.claude/army.json) in a directory."""
+    return Path(directory) / ".claude" / MARKER_FILE_NAME
 
 
-def read_marker_file(worktree_path: str) -> dict | None:
-    """Read marker file from worktree. Returns None if missing/invalid."""
-    marker_path = get_marker_path(worktree_path)
-    if not marker_path.exists():
-        return None
+def read_marker_file(directory: str) -> dict | None:
+    """Read marker file from directory. Returns None if missing."""
     try:
-        return json.loads(marker_path.read_text())
-    except (json.JSONDecodeError, IOError):
+        return json.loads(get_marker_path(directory).read_text())
+    except FileNotFoundError:
         return None
+    # Let JSONDecodeError propagate - corrupted marker is a real error
 
 
-def write_marker_file(worktree_path: str, data: dict):
-    """Write marker file to worktree."""
-    marker_path = get_marker_path(worktree_path)
+def write_marker_file(directory: str, data: dict):
+    """Write marker file to directory. Creates .claude/ if needed."""
+    marker_path = get_marker_path(directory)
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(json.dumps(data, indent=2))
 
 
-def is_managed_worktree(worktree_path: str) -> bool:
-    """Check if worktree is managed by Claude Army."""
-    return get_marker_path(worktree_path).exists()
+def remove_marker_file(directory: str) -> bool:
+    """Remove marker file from directory. Returns True if removed."""
+    marker_path = get_marker_path(directory)
+    if marker_path.exists():
+        marker_path.unlink()
+        return True
+    return False
+
+
+def is_managed_directory(directory: str) -> bool:
+    """Check if directory has a Claude Army marker."""
+    return get_marker_path(directory).exists()
 
 
 def scan_for_marker_files(search_paths: list[str] = None) -> list[dict]:
-    """Scan for marker files to rebuild registry.
+    """Scan for .claude/army.json marker files to rebuild registry.
 
-    Returns list of marker file contents with 'worktree_path' added.
+    Returns list of marker file contents with 'path' (directory) added.
     """
     import subprocess
 
@@ -209,17 +232,20 @@ def scan_for_marker_files(search_paths: list[str] = None) -> list[dict]:
     markers = []
     for search_path in search_paths:
         try:
+            # Find army.json files inside .claude directories
             result = subprocess.run(
-                ["find", search_path, "-name", MARKER_FILE_NAME, "-type", "f"],
+                ["find", search_path, "-path", "*/.claude/army.json", "-type", "f"],
                 capture_output=True, text=True, timeout=30
             )
             for line in result.stdout.strip().split("\n"):
                 if not line:
                     continue
-                worktree_path = str(Path(line).parent)
-                marker_data = read_marker_file(worktree_path)
+                # army.json is at /path/to/dir/.claude/army.json
+                # so directory is parent.parent
+                directory = str(Path(line).parent.parent)
+                marker_data = read_marker_file(directory)
                 if marker_data:
-                    marker_data["worktree_path"] = worktree_path
+                    marker_data["path"] = directory
                     markers.append(marker_data)
         except (subprocess.TimeoutExpired, Exception):
             continue
@@ -230,7 +256,7 @@ def scan_for_marker_files(search_paths: list[str] = None) -> list[dict]:
 # ============ Registry Recovery ============
 
 def rebuild_registry_from_markers(search_paths: list[str] = None) -> int:
-    """Rebuild registry by scanning for marker files.
+    """Rebuild registry by scanning for .claude/army.json marker files.
 
     Returns number of tasks recovered.
     """
@@ -241,28 +267,32 @@ def rebuild_registry_from_markers(search_paths: list[str] = None) -> int:
     recovered = 0
 
     for marker in markers:
-        repo_path = marker.get("repo")
-        task_name = marker.get("task_name")
+        name = marker.get("name")
+        task_type = marker.get("type", "session")
         topic_id = marker.get("topic_id")
-        status = marker.get("status", "active")
-        worktree_path = marker.get("worktree_path")
+        path = marker.get("path")
+        repo = marker.get("repo")  # Only for worktrees
 
-        if not repo_path or not task_name:
+        if not name or not path:
             continue
 
         # Check if already in registry
-        existing = registry.get_task(repo_path, task_name)
+        existing = registry.get_task(name)
         if existing:
             continue
 
         # Add to registry
-        registry.add_task(repo_path, task_name, {
+        task_data = {
+            "type": task_type,
+            "path": path,
             "topic_id": topic_id,
-            "status": status,
-            "worktree_path": worktree_path
-        })
+        }
+        if repo:
+            task_data["repo"] = repo
+
+        registry.add_task(name, task_data)
         recovered += 1
-        log(f"Recovered task: {task_name} in {repo_path}")
+        log(f"Recovered task: {name} ({task_type}) at {path}")
 
     return recovered
 

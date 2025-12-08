@@ -258,11 +258,13 @@ class CommandHandler:
             return
 
         lines = ["*Task Status*\n"]
-        for repo_path, task_name, task_data in tasks:
+        for task_name, task_data in tasks:
             status = task_data.get("status", "unknown")
+            task_type = task_data.get("type", "session")
             topic_id = task_data.get("topic_id", "?")
             emoji = "▶️" if status == "active" else "⏸️" if status == "paused" else "❓"
-            lines.append(f"{emoji} `{task_name}` ({status}) - topic {topic_id}")
+            type_indicator = "🌳" if task_type == "worktree" else "📁"
+            lines.append(f"{emoji}{type_indicator} `{task_name}` ({status})")
 
         self._reply(chat_id, msg_id, "\n".join(lines))
 

@@ -38,22 +38,34 @@ Manage multiple Claude instances, each working on a separate task/feature/PR in 
 
 ## Core Concepts
 
+### Task Types
+
+| Type | Directory | Topic | Cleanup |
+|------|-----------|-------|---------|
+| **Worktree Task** | Created by us (`repo/trees/{name}/`) | Long-lived (PR/branch work) | Delete worktree + close topic |
+| **Session** | Any existing directory | Ephemeral (focused work) | Remove marker + close topic (preserve dir) |
+
+Both types:
+- Have `.claude/army.json` marker file
+- Have a dedicated Telegram topic
+- Are recoverable from filesystem scan
+
 ### Entities
 
 | Entity | Description | Lifetime |
 |--------|-------------|----------|
-| **Task** | Unit of work (feature, bug fix, PR) | Until cleanup |
-| **Worktree** | Git worktree in `repo/trees/<name>/` | Tied to task |
-| **Worker Claude** | Claude instance in worktree | Ephemeral, resurrected |
-| **Topic** | Telegram forum topic for task | Tied to task |
+| **Worktree Task** | Branch work in isolated git worktree | Until cleanup (deletes directory) |
+| **Session** | Focused work in any directory | Until cleanup (preserves directory) |
+| **Worker Claude** | Claude instance in task directory | Ephemeral, resurrected as needed |
+| **Topic** | Telegram forum topic for task | Tied to task lifecycle |
 | **Operator Claude** | Management Claude in ~/claude-army | Always running |
 
 ### Source of Truth Hierarchy
 
-1. **Worktrees** - Define what tasks exist (marker file `.claude-army-task`)
+1. **Marker files** - `.claude/army.json` defines tasks (inside Claude's own state dir)
 2. **Pinned messages** - Store task metadata (recoverable from Telegram)
-3. **Registry** - Cache at `~/claude-army/operator/registry.json` (rebuildable)
-4. **Sessions** - Ephemeral, resurrected as needed
+3. **Registry** - Cache at `~/claude-army/operator/registry.json` (rebuildable from markers)
+4. **tmux sessions** - Ephemeral, resurrected as needed
 
 ## Directory Structure
 
@@ -61,7 +73,7 @@ Manage multiple Claude instances, each working on a separate task/feature/PR in 
 ~/claude-army/                    # Project root (daemon runs here)
   telegram-daemon.py              # Daemon process
   operator/                       # Operator Claude's working directory (gitignored)
-    registry.json                 # Cache (rebuildable)
+    registry.json                 # Cache (rebuildable from .claude/army.json files)
     config.json                   # Group ID, topic IDs, etc.
     .claude/                      # Operator's Claude state (conversations, settings)
   ...
@@ -69,24 +81,31 @@ Manage multiple Claude instances, each working on a separate task/feature/PR in 
 ~/projects/myrepo/                # User's repository
   trees/
     feature-x/                    # Worktree for task
-      .claude-army-task           # Marker file with metadata
-      ...
+      .claude/
+        army.json                 # Marker file (inside Claude's state dir)
+        ...                       # Claude's conversation state
     fix-bug-123/
-      .claude-army-task
-      ...
+      .claude/
+        army.json
+        ...
+
+~/projects/other-project/         # Existing directory (session, not worktree)
+  .claude/
+    army.json                     # Session marker
+    ...
 ```
 
 ### Marker File Format
 
 ```json
-// .claude-army-task
+// .claude/army.json (same format for worktree and session)
 {
-  "task_name": "feature-x",
-  "repo": "/home/user/myrepo",
+  "name": "feature-x",
+  "type": "worktree",             // or "session"
+  "repo": "/home/user/myrepo",    // only for worktrees
   "description": "Add dark mode support",
   "topic_id": 123456,
-  "created_at": "2025-01-01T00:00:00Z",
-  "status": "active"
+  "created_at": "2025-01-01T00:00:00Z"
 }
 ```
 
@@ -111,19 +130,25 @@ The script receives environment variables:
 ### Registry Cache Format
 
 ```json
-// ~/.claude-army/registry.json
+// operator/registry.json (rebuildable from .claude/army.json scans)
 {
-  "group_id": -100123456789,
-  "general_topic_id": 1,
-  "repos": {
-    "/home/user/myrepo": {
-      "worktree_base": "trees",
-      "tasks": ["feature-x", "fix-bug-123"]
+  "tasks": {
+    "feature-x": {
+      "type": "worktree",
+      "path": "/home/user/myrepo/trees/feature-x",
+      "repo": "/home/user/myrepo",
+      "topic_id": 123
+    },
+    "investigate-bug": {
+      "type": "session",
+      "path": "/home/user/other-project",
+      "topic_id": 456
     }
-  },
-  "operator_pane": "operator:0.0"
+  }
 }
 ```
+
+Note: `group_id`, `general_topic_id`, and `operator_pane` are in `config.json`, not registry.
 
 ## Telegram Setup
 
@@ -203,26 +228,40 @@ Operator: "Cleaned up refactor-api task."
 
 | Action | Triggers | Permission Required |
 |--------|----------|---------------------|
-| Spawn task | User request | Yes (creates worktree) |
+| Spawn worktree task | User request | Yes (creates worktree) |
+| Spawn session | User request | Yes (creates topic) |
 | List tasks | User request | No |
 | Task status | User request | No |
 | Pause task | User request | No |
 | Resume task | User request | No |
-| Cleanup task | User request | Yes (deletes worktree) |
-| Discover repo | User mentions repo | No |
+| Cleanup worktree task | User request | Yes (deletes worktree) |
+| Cleanup session | User request | Yes (closes topic) |
 
 ## Worker Claude Sessions
 
 ### Lifecycle
 
 ```
-Spawn:
+Spawn Worktree Task:
   1. Create git worktree from master
-  2. Create marker file with metadata
-  3. Create Telegram topic
+  2. Create Telegram topic
+  3. Write .claude/army.json marker
   4. Pin metadata message in topic
   5. Create tmux session
   6. Start Claude with task description
+
+Spawn Session (existing directory):
+  1. Verify directory exists
+  2. Create Telegram topic
+  3. Write .claude/army.json marker
+  4. Create tmux session
+  5. Start Claude with task description
+
+Auto-register (daemon discovers Claude):
+  1. Daemon sees new transcript
+  2. Create Telegram topic
+  3. Write .claude/army.json marker
+  4. Task is now tracked and routable
 
 Running:
   - Notifications → task topic
@@ -231,17 +270,18 @@ Running:
 
 Death (crash, reboot):
   - Daemon detects missing session
-  - Resurrects: `claude --resume` in worktree
+  - Resurrects: `claude --resume` in directory
   - Topic continues working
 
-Pause:
-  - Mark status="paused" in marker file
-  - Kill session (won't resurrect)
-
-Cleanup:
+Cleanup (worktree):
   - Kill session
-  - Delete worktree
-  - Rename topic to "[DONE] task-name"
+  - Delete worktree (removes directory + .claude/army.json)
+  - Close topic
+
+Cleanup (session):
+  - Kill session
+  - Remove .claude/army.json (preserve directory)
+  - Close topic
 ```
 
 ### tmux Session Naming
@@ -344,44 +384,44 @@ def handle_general_topic_message(message):
 
 ## Registry Recovery
 
-If `~/.claude-army/registry.json` is corrupted/lost:
+If `operator/registry.json` is corrupted/lost:
 
-1. Scan for marker files: `find ~ -name ".claude-army-task"`
-2. For each marker file:
-   - Read task metadata
+1. Scan for marker files: `find ~ -name "army.json" -path "*/.claude/*"`
+2. For each `.claude/army.json` found:
+   - Read task metadata (name, type, topic_id)
    - Verify topic exists (Telegram API)
    - Add to registry
-3. Rebuild repo list from discovered tasks
+3. All tasks (worktree and session) are recovered
+
+Since marker files live in `.claude/` which Claude creates, all registered tasks are recoverable.
 
 ## Implementation Phases
 
-### Phase 1: Foundation
-- [ ] Telegram Forum setup (`/setup` command)
-- [ ] Topic creation API integration
-- [ ] Pinned message metadata storage
-- [ ] Registry cache implementation
-- [ ] Marker file format and creation
+### Phase 1: Foundation ✓
+- [x] Telegram Forum setup (`/setup` command)
+- [x] Topic creation API integration
+- [x] Registry cache implementation
+- [x] Config management with auto-reload
 
-### Phase 2: Operator Claude
-- [ ] Operator tmux session management
-- [ ] Message routing to Operator pane
-- [ ] Operator response capture and send to Telegram
-- [ ] Basic spawn/list/status/cleanup tools
+### Phase 2: Operator Claude ✓
+- [x] Operator tmux session management
+- [x] Message routing to Operator pane
+- [x] Operator response capture and send to Telegram
 
-### Phase 3: Worker Management
-- [ ] Worktree creation/deletion
-- [ ] Worker session lifecycle (spawn, death detection, resurrection)
-- [ ] Notification routing by worktree
+### Phase 3: Task Management
+- [ ] Spawn worktree task (create worktree, topic, marker, session)
+- [ ] Spawn session (create topic, marker for existing directory)
+- [ ] Auto-register discovered sessions (daemon writes marker)
+- [ ] Notification routing by task (lookup in registry)
+- [ ] Cleanup (worktree vs session behavior)
+
+### Phase 4: Session Lifecycle
+- [ ] Worker session resurrection on death
 - [ ] Pause/resume functionality
-
-### Phase 4: Robustness
-- [ ] Registry recovery from marker files
-- [ ] Topic metadata recovery
-- [ ] Multi-group protection
-- [ ] Error handling and retries
-
-### Phase 5: Polish
-- [ ] Natural language command interpretation
-- [ ] Auto-adopt manual worktrees
-- [ ] Cleanup after PR merge
 - [ ] Status indicators in topic names
+
+### Phase 5: Recovery & Polish
+- [ ] Registry recovery from `.claude/army.json` scans
+- [ ] Topic metadata recovery from Telegram
+- [ ] Natural language command interpretation
+- [ ] Cleanup after PR merge
