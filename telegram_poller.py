@@ -331,6 +331,43 @@ class TelegramPoller:
                     log(f"  Failed to route to operator")
             return
 
+        # Check if this is a reply to a tracked message (permission prompt or other)
+        # This takes precedence over general topic routing
+        if reply_to and str(reply_to) in self.state and text:
+            entry = self.state.get(str(reply_to))
+            pane = entry.get("pane")
+            transcript_path = entry.get("transcript_path")
+
+            if pane:
+                # Check transcript for pending tool_use
+                pending_tool_id = get_pending_tool_from_transcript(transcript_path)
+
+                if pending_tool_id:
+                    entry_tool_id = entry.get("tool_use_id")
+                    if entry_tool_id == pending_tool_id:
+                        # User is replying to the pending permission
+                        if send_text_to_permission_prompt(pane, text):
+                            log(f"  Sent to permission prompt on pane {pane}: {text[:50]}...")
+                            update_message_buttons(self.bot_token, chat_id, reply_to, "💬 Replied")
+                            self.state.update(str(reply_to), handled=True)
+                            react_to_message(self.bot_token, chat_id, msg_id)
+                        else:
+                            log(f"  Failed (pane {pane} dead)")
+                        return
+                    else:
+                        # Block: there's a different pending permission
+                        log(f"  Blocked: transcript has pending tool ({pending_tool_id[:20]}...), reply to that first")
+                        send_reply(self.bot_token, chat_id, msg_id, "⚠️ Ignored: there's a pending permission prompt. Please respond to that first.")
+                        return
+                else:
+                    # No pending permission - send as regular input to pane
+                    if send_to_pane(pane, text):
+                        log(f"  Sent to pane {pane}: {text[:50]}...")
+                        react_to_message(self.bot_token, chat_id, msg_id)
+                    else:
+                        log(f"  Failed (pane {pane} dead)")
+                    return
+
         # Route task topic messages to worker
         if topic_id and get_worker_pane_for_topic(topic_id):
             if text:
@@ -341,43 +378,6 @@ class TelegramPoller:
                 else:
                     log(f"  Failed to route to worker")
             return
-
-        if not reply_to or str(reply_to) not in self.state or not text:
-            return
-
-        entry = self.state.get(str(reply_to))
-        pane = entry.get("pane")
-        transcript_path = entry.get("transcript_path")
-
-        if not pane:
-            log(f"  Skipping: no pane in entry")
-            return
-
-        # Check transcript for pending tool_use
-        pending_tool_id = get_pending_tool_from_transcript(transcript_path)
-
-        if pending_tool_id:
-            entry_tool_id = entry.get("tool_use_id")
-            if entry_tool_id == pending_tool_id:
-                # User is replying to the pending permission
-                if send_text_to_permission_prompt(pane, text):
-                    log(f"  Sent to permission prompt on pane {pane}: {text[:50]}...")
-                    update_message_buttons(self.bot_token, chat_id, reply_to, "💬 Replied")
-                    self.state.update(str(reply_to), handled=True)
-                    react_to_message(self.bot_token, chat_id, msg_id)
-                else:
-                    log(f"  Failed (pane {pane} dead)")
-            else:
-                # Block: there's a different pending permission
-                log(f"  Blocked: transcript has pending tool ({pending_tool_id[:20]}...), reply to that first")
-                send_reply(self.bot_token, chat_id, msg_id, "⚠️ Ignored: there's a pending permission prompt. Please respond to that first.")
-        else:
-            # No pending permission - send as regular input
-            if send_to_pane(pane, text):
-                log(f"  Sent to pane {pane}: {text[:50]}...")
-                react_to_message(self.bot_token, chat_id, msg_id)
-            else:
-                log(f"  Failed (pane {pane} dead)")
 
     def process_updates(self, updates: list[dict]):
         """Process a list of updates."""

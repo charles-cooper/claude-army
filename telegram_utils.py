@@ -238,6 +238,17 @@ def delete_message(bot_token: str, chat_id: str, msg_id: int) -> bool:
     return resp.ok
 
 
+def send_chat_action(bot_token: str, chat_id: str, action: str = "typing", topic_id: int = None):
+    """Send chat action (typing indicator). Disappears after 5s or when message sent."""
+    payload = {"chat_id": chat_id, "action": action}
+    if topic_id:
+        payload["message_thread_id"] = topic_id
+    requests.post(
+        f"https://api.telegram.org/bot{bot_token}/sendChatAction",
+        json=payload
+    )
+
+
 def react_to_message(bot_token: str, chat_id: str, msg_id: int, emoji: str = "👀"):
     """React to a message with an emoji."""
     requests.post(
