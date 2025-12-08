@@ -130,12 +130,17 @@ def cleanup_dead_panes(state: State):
     return len(dead)
 
 
-def expire_old_buttons(bot_token: str, chat_id: str, pane: str, state: State, transcript_mgr):
+def expire_old_buttons(bot_token: str, pane: str, state: State, transcript_mgr):
     """Expire buttons for old messages on this pane if their tool_use has a result.
 
     Only expires if the tool was already handled (has tool_result in transcript).
     This avoids expiring legitimately pending prompts when Claude queues multiple tool_uses.
     """
+    config = get_config()
+    if not config.is_configured():
+        return
+    group_id = str(config.group_id)
+
     for msg_id, entry in list(state.items()):
         if entry.get("pane") != pane or entry.get("handled"):
             continue
@@ -149,7 +154,7 @@ def expire_old_buttons(bot_token: str, chat_id: str, pane: str, state: State, tr
         if transcript_path in transcript_mgr.watchers:
             watcher = transcript_mgr.watchers[transcript_path]
             if tool_use_id in watcher.tool_results:
-                update_message_buttons(bot_token, chat_id, int(msg_id), "⏰ Expired")
+                update_message_buttons(bot_token, group_id, int(msg_id), "⏰ Expired")
                 state.update(msg_id, handled=True)
 
 
@@ -182,8 +187,13 @@ def handle_superseded_idle(state: State, transcript_mgr):
                 break
 
 
-def handle_completed_tools(bot_token: str, chat_id: str, state: State, transcript_mgr):
+def handle_completed_tools(bot_token: str, state: State, transcript_mgr):
     """Handle notifications for tools that completed. Delete if quick, expire if slow."""
+    config = get_config()
+    if not config.is_configured():
+        return
+    group_id = str(config.group_id)
+
     now = time.time()
     for msg_id, entry in list(state.items()):
         if entry.get("handled"):
@@ -201,14 +211,14 @@ def handle_completed_tools(bot_token: str, chat_id: str, state: State, transcrip
 
                 if elapsed < QUICK_RESPONSE_THRESHOLD:
                     # Quick response - delete notification
-                    if delete_message(bot_token, chat_id, int(msg_id)):
+                    if delete_message(bot_token, group_id, int(msg_id)):
                         log(f"Deleted (quick response {elapsed:.1f}s): msg_id={msg_id}")
                     else:
                         log(f"Failed to delete msg_id={msg_id}")
                     state.remove(msg_id)
                 else:
                     # Slow response - mark expired so user can see what happened
-                    update_message_buttons(bot_token, chat_id, int(msg_id), "⏰ Expired")
+                    update_message_buttons(bot_token, group_id, int(msg_id), "⏰ Expired")
                     state.update(msg_id, handled=True)
                     log(f"Expired (slow response {elapsed:.1f}s): msg_id={msg_id}")
 
@@ -313,20 +323,15 @@ def auto_register_discovered_sessions(bot_token: str, chat_id: str, transcript_m
 
 def send_compaction_notification(bot_token: str, chat_id: str, event: CompactionEvent):
     """Send Telegram notification for a compaction event."""
-    project = escape_markdown_v2(strip_home(event.cwd))
-    trigger = escape_markdown_v2(event.trigger)
-    tokens = escape_markdown_v2(f"{event.pre_tokens:,}")
-    msg = f"`{project}`\n\n🔄 Context compacted \\({trigger}, {tokens} tokens\\)"
-    send_to_chat_or_topic(bot_token, chat_id, event.pane, event.cwd, msg)
+    msg = f"🔄 Context compacted ({event.trigger}, {event.pre_tokens:,} tokens)"
+    send_to_chat_or_topic(bot_token, chat_id, event.pane, event.cwd, msg, parse_mode="Markdown")
     log(f"Notified: compaction ({event.trigger})")
 
 
 def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent, state: State) -> int | None:
     """Send Telegram notification when Claude is waiting for input. Returns message_id."""
-    project = escape_markdown_v2(strip_home(event.cwd))
-    text = escape_markdown_v2(event.text)
-    msg = f"`{project}`\n\n💬 {text}"
-    result = send_to_chat_or_topic(bot_token, chat_id, event.pane, event.cwd, msg)
+    msg = f"💬 {event.text}"
+    result = send_to_chat_or_topic(bot_token, chat_id, event.pane, event.cwd, msg, parse_mode="Markdown")
     if not result:
         return None
     msg_id = result.get("result", {}).get("message_id")
@@ -346,11 +351,9 @@ def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent, state
 
 def send_notification(bot_token: str, chat_id: str, tool: PendingTool, state: State) -> int | None:
     """Send Telegram notification for a pending tool. Returns message_id."""
-    project = escape_markdown_v2(strip_home(tool.cwd))
-    assistant_text = escape_markdown_v2(tool.assistant_text) if tool.assistant_text else ""
-    prefix = f"{assistant_text}\n\n\\-\\-\\-\n\n" if assistant_text else ""
-    tool_desc = format_tool_permission(tool.tool_name, tool.tool_input, markdown_v2=True)
-    msg = f"`{project}`\n\n{prefix}{tool_desc}"
+    prefix = f"{tool.assistant_text}\n\n---\n\n" if tool.assistant_text else ""
+    tool_desc = format_tool_permission(tool.tool_name, tool.tool_input, markdown_v2=False)
+    msg = f"{prefix}{tool_desc}"
 
     reply_markup = {
         "inline_keyboard": [[
@@ -359,7 +362,7 @@ def send_notification(bot_token: str, chat_id: str, tool: PendingTool, state: St
         ]]
     }
 
-    result = send_to_chat_or_topic(bot_token, chat_id, tool.pane, tool.cwd, msg, reply_markup)
+    result = send_to_chat_or_topic(bot_token, chat_id, tool.pane, tool.cwd, msg, reply_markup, parse_mode="Markdown")
     if not result:
         return None
 
@@ -443,12 +446,12 @@ def main():
                 telegram_poller.process_updates(update_queue.get_nowait())
 
             # Handle completed tools (delete quick, expire slow)
-            handle_completed_tools(bot_token, chat_id, state, transcript_mgr)
+            handle_completed_tools(bot_token, state, transcript_mgr)
 
             # Handle superseded idle notifications (mark, don't remove)
             handle_superseded_idle(state, transcript_mgr)
             for pane in transcript_mgr.pane_to_transcript:
-                expire_old_buttons(bot_token, chat_id, pane, state, transcript_mgr)
+                expire_old_buttons(bot_token, pane, state, transcript_mgr)
 
             # Periodic cleanup (every 5 minutes)
             if now - last_cleanup > CLEANUP_INTERVAL:
