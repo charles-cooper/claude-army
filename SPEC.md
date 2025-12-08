@@ -66,6 +66,29 @@ These tools are never notified (always auto-approved):
 - `AgentOutputTool`
 - `TodoWrite`
 
+### Batched Tool Calls
+Claude can send multiple tool_use in a single message. TUI shows them one at a time.
+
+Handling:
+1. All tool_use from a message are added to `tool_queue` in order
+2. Only the first tool without a result is notified
+3. When tool_result arrives, the next queued tool is notified
+4. This matches TUI behavior (one permission dialog at a time)
+
+```
+Claude sends: tool_use A, B, C
+Queue: [A, B, C]
+Notify: A only
+User approves A → tool_result A
+Queue: [B, C]
+Notify: B
+...
+```
+
+### Batch Denial
+Denying one tool in a batch interrupts all queued tools (Claude behavior).
+When user denies via Telegram, all other pending permission prompts for the same pane are expired with "❌ Denied via batch denial".
+
 ### Idle Detection
 Text-only assistant messages (no tool_use) trigger idle notifications immediately.
 - Tracked by Claude message ID (`message.id`)

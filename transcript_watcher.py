@@ -56,6 +56,7 @@ class TranscriptWatcher:
     notified_tools: set = field(default_factory=set)
     tool_results: set = field(default_factory=set)
     pending_tools: dict = field(default_factory=dict)  # tool_id -> PendingTool
+    tool_queue: list = field(default_factory=list)  # Ordered queue of tool_ids (for batched tool calls)
     compactions: list = field(default_factory=list)  # Compaction events (notify immediately)
     idle_events: list = field(default_factory=list)  # Idle events (notify immediately)
     last_check: float = 0
@@ -85,21 +86,31 @@ class TranscriptWatcher:
         idle_events = self.idle_events
         self.idle_events = []
 
-        # Check which pending tools are ready to notify (after delay)
+        # Clean up completed tools from queue, pending, and notified
+        self.tool_queue = [t for t in self.tool_queue if t not in self.tool_results]
+        for tool_id in list(self.pending_tools.keys()):
+            if tool_id in self.tool_results:
+                del self.pending_tools[tool_id]
+        self.notified_tools -= self.tool_results  # Clear notified status when result arrives
+
+        # Find current tool (first in queue without result)
+        # Only notify if no earlier tool is still waiting for result
         ready_tools = []
         now = time.time()
-        done = []
-        for tool_id, tool in self.pending_tools.items():
+        for tool_id in self.tool_queue:
             if tool_id in self.tool_results:
-                done.append(tool_id)
-                continue
+                continue  # Has result, skip
+            if tool_id in self.notified_tools:
+                # Already notified, waiting for result - BLOCK until it completes
+                break
+            if tool_id not in self.pending_tools:
+                continue  # Not pending (shouldn't happen)
+            tool = self.pending_tools[tool_id]
             if now - tool.detected_at > NOTIFY_DELAY:
                 ready_tools.append(tool)
                 self.notified_tools.add(tool_id)
-                done.append(tool_id)
-
-        for tool_id in done:
-            del self.pending_tools[tool_id]
+                del self.pending_tools[tool_id]
+                break  # Only return one tool at a time
 
         return ready_tools, compactions, idle_events
 
@@ -141,24 +152,25 @@ class TranscriptWatcher:
         message = entry.get("message", {})
         msg_id = message.get("id", "")
         assistant_text = ""
-        tool_call = None
+        tool_calls = []
 
+        # Collect ALL tool_use from this message (Claude can batch them)
         for c in message.get("content", []):
             if isinstance(c, dict):
                 if c.get("type") == "text":
                     assistant_text = c.get("text", "")
                 elif c.get("type") == "tool_use":
-                    tool_call = c
+                    tool_calls.append(c)
 
         # If we see tool_use, mark that this message is not idle
-        if tool_call and msg_id:
+        if tool_calls and msg_id:
             self.tool_use_msg_ids.add(msg_id)
             # Clear any pending idle for this message
             if self.last_idle_msg_id == msg_id:
                 self.last_idle_msg_id = ""  # Will be handled by daemon via supersession
 
         # Check for idle event: assistant text with no tool_use
-        if assistant_text and not tool_call and msg_id:
+        if assistant_text and not tool_calls and msg_id:
             # Only notify once per message
             if msg_id != self.last_idle_msg_id:
                 log(f"Detected: idle (text-only message)")
@@ -171,34 +183,37 @@ class TranscriptWatcher:
                 self.last_idle_msg_id = msg_id
             return
 
-        if not tool_call:
+        if not tool_calls:
             return
 
-        tool_id = tool_call.get("id", "")
-        tool_name = tool_call.get("name", "")
+        # Process each tool_use in order (TUI shows them sequentially)
+        for tool_call in tool_calls:
+            tool_id = tool_call.get("id", "")
+            tool_name = tool_call.get("name", "")
 
-        # Skip internal tools that are always auto-approved
-        if tool_name in SKIP_TOOLS:
-            return
+            # Skip internal tools that are always auto-approved
+            if tool_name in SKIP_TOOLS:
+                continue
 
-        # Skip if already notified or already has result or already pending
-        if tool_id in self.notified_tools or tool_id in self.tool_results:
-            return
-        if tool_id in self.pending_tools:
-            return
+            # Skip if already notified or already has result or already pending
+            if tool_id in self.notified_tools or tool_id in self.tool_results:
+                continue
+            if tool_id in self.pending_tools:
+                continue
 
-        # Add to pending - will notify after delay if no tool_result arrives
-        log(f"Detected: {tool_name} ({tool_id[:20]}...)")
-        self.pending_tools[tool_id] = PendingTool(
-            tool_id=tool_id,
-            tool_name=tool_name,
-            tool_input=tool_call.get("input", {}),
-            assistant_text=assistant_text,
-            transcript_path=self.path,
-            pane=self.pane,
-            cwd=self.cwd,
-            detected_at=time.time()
-        )
+            # Add to queue and pending - will notify in order after delay
+            log(f"Detected: {tool_name} ({tool_id[:20]}...)")
+            self.tool_queue.append(tool_id)
+            self.pending_tools[tool_id] = PendingTool(
+                tool_id=tool_id,
+                tool_name=tool_name,
+                tool_input=tool_call.get("input", {}),
+                assistant_text=assistant_text,
+                transcript_path=self.path,
+                pane=self.pane,
+                cwd=self.cwd,
+                detected_at=time.time()
+            )
 
 
 def decode_cwd_from_path(transcript_path: str) -> str:

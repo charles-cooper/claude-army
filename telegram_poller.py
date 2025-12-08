@@ -186,19 +186,22 @@ class TelegramPoller:
             log(f"  Already handled")
             return
 
-        # Check if stale (newer message exists for same pane)
-        latest = max(
-            (int(mid) for mid, e in self.state.items() if e.get("pane") == pane),
-            default=0
-        )
-        if cb_msg_id < latest:
-            answer_callback(self.bot_token, cb_id, "Stale prompt")
-            update_message_buttons(self.bot_token, cb_chat_id, cb_msg_id, "⏰ Expired")
-            self.state.update(msg_key, handled=True)
-            log(f"  Stale prompt for pane {pane}")
-            return
-
         is_permission = entry.get("type") == "permission_prompt"
+
+        # Check if stale (newer message exists for same pane)
+        # Skip this check for permission_prompt - they use tool_result check instead
+        # (Claude can queue multiple tool_use, so newer notification != stale)
+        if not is_permission:
+            latest = max(
+                (int(mid) for mid, e in self.state.items() if e.get("pane") == pane),
+                default=0
+            )
+            if cb_msg_id < latest:
+                answer_callback(self.bot_token, cb_id, "Stale prompt")
+                update_message_buttons(self.bot_token, cb_chat_id, cb_msg_id, "⏰ Expired")
+                self.state.update(msg_key, handled=True)
+                log(f"  Stale prompt for pane {pane}")
+                return
 
         # Check if tool was already handled via TUI
         transcript_path = entry.get("transcript_path")
@@ -219,6 +222,21 @@ class TelegramPoller:
                     update_message_buttons(self.bot_token, cb_chat_id, cb_msg_id, get_action_label(cb_data, tool_name))
                     self.state.update(msg_key, handled=True)
                     log(f"  Sent {labels[cb_data]} to pane {pane}")
+                    # If denied, expire all other pending permission prompts for this pane
+                    # (denial interrupts the whole batch in Claude)
+                    if cb_data == "n":
+                        for other_msg_id, other_entry in list(self.state.items()):
+                            if other_msg_id == msg_key:
+                                continue
+                            if other_entry.get("pane") != pane:
+                                continue
+                            if other_entry.get("type") != "permission_prompt":
+                                continue
+                            if other_entry.get("handled"):
+                                continue
+                            update_message_buttons(self.bot_token, cb_chat_id, int(other_msg_id), "❌ Denied via batch denial")
+                            self.state.update(other_msg_id, handled=True)
+                            log(f"  Expired queued prompt: msg_id={other_msg_id}")
                 else:
                     answer_callback(self.bot_token, cb_id, "Failed: pane dead")
                     self.state.update(msg_key, handled=True)
