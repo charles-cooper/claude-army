@@ -314,14 +314,35 @@ class TranscriptManager:
                 size = os.path.getsize(transcript_path)
             except:
                 size = 0
-            self.watchers[transcript_path] = TranscriptWatcher(
+
+            # Scan for existing tool_results so we can expire stale notifications
+            existing_results = set()
+            try:
+                with open(transcript_path, 'r') as f:
+                    for line in f:
+                        try:
+                            entry_data = json.loads(line)
+                            if entry_data.get("type") == "user":
+                                for c in entry_data.get("message", {}).get("content", []):
+                                    if isinstance(c, dict) and c.get("type") == "tool_result":
+                                        tool_use_id = c.get("tool_use_id")
+                                        if tool_use_id:
+                                            existing_results.add(tool_use_id)
+                        except json.JSONDecodeError:
+                            continue
+            except Exception as e:
+                log(f"Error scanning transcript for tool_results: {e}")
+
+            watcher = TranscriptWatcher(
                 path=transcript_path,
                 pane=pane,
                 cwd=cwd,
                 position=size
             )
+            watcher.tool_results = existing_results
+            self.watchers[transcript_path] = watcher
             self.pane_to_transcript[pane] = transcript_path
-            log(f"Watching transcript (from state): {transcript_path} (pane {pane}, cwd {cwd})")
+            log(f"Watching transcript (from state): {transcript_path} (pane {pane}, cwd {cwd}, {len(existing_results)} existing results)")
 
     def cleanup_dead(self):
         """Remove watchers for dead panes."""
