@@ -6,7 +6,9 @@ import time
 from telegram_utils import log
 from registry import get_config
 
-OPERATOR_SESSION = "claude-operator"
+# Short prefix to avoid collisions with user sessions
+SESSION_PREFIX = "ca-"  # claude-army
+OPERATOR_SESSION = f"{SESSION_PREFIX}op"
 
 
 def session_exists(session_name: str = OPERATOR_SESSION) -> bool:

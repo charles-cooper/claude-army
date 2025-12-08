@@ -245,10 +245,14 @@ Cleanup:
 
 ### tmux Session Naming
 
+Short names for easy mobile access:
 ```
-Operator: claude-operator
-Workers: claude-{repo_name}-{task_name}
+Operator: ca-op
+Workers: ca-{task_name}
 ```
+
+The `ca-` prefix (claude-army) avoids collisions with user sessions.
+Task names must be unique across all repos.
 
 ### Claude Startup
 

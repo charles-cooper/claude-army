@@ -137,10 +137,14 @@ def delete_worktree(repo_path: str, task_name: str) -> bool:
     return True
 
 
+# Short prefix to avoid collisions with user sessions
+SESSION_PREFIX = "ca-"  # claude-army
+
+
 def get_session_name(repo_path: str, task_name: str) -> str:
-    """Get tmux session name for a worker."""
-    repo_name = Path(repo_path).name
-    return f"claude-{repo_name}-{task_name}"
+    """Get tmux session name for a worker. Uses short prefix + task name."""
+    # Just use task name - should be unique within claude-army
+    return f"{SESSION_PREFIX}{task_name}"
 
 
 def session_exists(session_name: str) -> bool:
@@ -168,11 +172,32 @@ def start_worker_session(repo_path: str, task_name: str, description: str, topic
     """Start a worker Claude session. Returns pane ID on success."""
     session_name = get_session_name(repo_path, task_name)
     worktree_path = get_worktree_path(repo_path, task_name)
+    registry = get_registry()
 
+    # Check for existing session
     if session_exists(session_name):
-        log(f"Worker session already exists: {session_name}")
         pane = get_pane_id(session_name)
-        return pane
+
+        # Already in registry - just use it
+        if registry.get_task(repo_path, task_name):
+            log(f"Worker session already exists: {session_name}")
+            return pane
+
+        # Not in registry - check if it's an orphaned session (marker file exists)
+        marker = read_marker_file(str(worktree_path))
+        if marker and marker.get("task_name") == task_name:
+            # Adopt orphaned session - update registry
+            log(f"Adopting orphaned session: {session_name}")
+            registry.add_task(repo_path, task_name, {
+                "topic_id": marker.get("topic_id", topic_id),
+                "pane": pane,
+                "status": "active"
+            })
+            return pane
+
+        # Genuine collision - different task with same name
+        log(f"Session name collision: {session_name} exists but is not ours")
+        return None
 
     if not worktree_path.exists():
         log(f"Worktree doesn't exist: {worktree_path}")
