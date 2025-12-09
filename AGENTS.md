@@ -26,6 +26,10 @@ This is a Telegram integration for Claude Code that watches transcripts and send
 
 - **No inline imports**: Always import at top level unless absolutely necessary to break circular dependencies.
 
+## Design Principles
+
+- **100% Resource Correctness**: Never accept resource leakage, orphans, or zombies as acceptable. Every resource created (Telegram topics, tmux sessions, marker files) must be properly tracked and cleaned up. If an operation can fail partway through, design it so partial state is recoverable or rolled back.
+
 ## Critical Learnings
 
 ### Claude Code TUI Navigation

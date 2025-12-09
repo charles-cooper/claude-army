@@ -537,6 +537,77 @@ If `operator/registry.json` is corrupted/lost:
 
 Use `/recover` command to trigger this manually.
 
+## Crash-Safe Topic Creation
+
+Topic creation uses a pending marker pattern to handle daemon crashes.
+
+### Problem
+
+If daemon crashes between creating a Telegram topic and persisting the topic_id, the topic becomes orphaned. The Bot API cannot enumerate existing topics.
+
+### Solution: Pending Marker Pattern
+
+```
+1. Write pending marker: {pending_topic_name: "task-foo", pending_since: "..."}
+2. Create topic → API returns topic_id
+3. Send setup message: "Setup in progress for task-foo..."
+4. Complete marker: {name: "task-foo", topic_id: 123, ...}
+5. Send completion: "Setup complete"
+```
+
+### Data Structures
+
+**Pending marker** (in `.claude/army.json`):
+```json
+{
+  "pending_topic_name": "task-foo",
+  "pending_since": "2024-01-01T12:00:00Z"
+}
+```
+
+**Topic mapping** (in `config.json`):
+```json
+{
+  "topic_mappings": {
+    "12345": "task-foo",
+    "12346": "task-bar"
+  }
+}
+```
+
+**Persisted offset** (in `config.json`):
+```json
+{
+  "telegram_offset": 123456789
+}
+```
+
+### Recovery Mechanisms
+
+1. **Automatic via forum_topic_created**: When polling sees a `forum_topic_created` event, store `topic_id → name` mapping in config.
+
+2. **Message from unknown topic**: When a message arrives from a topic_id not in registry:
+   - Try stored mapping → complete pending marker
+   - Check if message text matches pending marker name → complete
+   - Prompt user with list of pending tasks
+
+3. **Offset persistence**: Store `telegram_offset` in config so we don't miss `forum_topic_created` events after restart.
+
+### Crash Scenarios
+
+| Crash Point | State | Recovery |
+|-------------|-------|----------|
+| Before step 2 | Pending marker, no topic | Clean up marker on next attempt |
+| Between 2-3 | Pending marker, topic exists | `forum_topic_created` mapping → auto-recover |
+| Between 3-4 | Pending marker, topic + setup msg | Reply to setup msg OR mapping lookup |
+| After 4 | Complete marker | Just missing completion msg (cosmetic) |
+
+### Guarantees
+
+- **No duplicate topics**: Pending marker prevents new creation while uncertain
+- **No orphaned topics**: Multi-tier recovery ensures we can always link topic_id to marker
+- **No data loss**: Offset persistence prevents update replay
+
 ## Config Files
 
 | File | Purpose |

@@ -14,11 +14,12 @@ from pathlib import Path
 
 from telegram_utils import (
     log, edit_forum_topic, create_forum_topic, close_forum_topic,
-    shell_quote, TopicCreationError, send_to_tmux_pane
+    shell_quote, TopicCreationError, send_to_tmux_pane, send_to_topic,
+    escape_markdown_v2
 )
 from registry import (
     get_config, get_registry, write_marker_file, read_marker_file,
-    remove_marker_file
+    remove_marker_file, write_marker_file_pending, complete_pending_marker
 )
 
 
@@ -346,8 +347,14 @@ def spawn_session(directory: str, task_name: str, description: str) -> dict | No
 def register_existing_session(directory: str, task_name: str) -> dict | None:
     """Register an existing Claude session (auto-registration by daemon).
 
-    Creates topic and marker for a discovered session.
-    Returns task_data dict on success, None if not configured or name collision.
+    Uses pending marker pattern for crash recovery:
+    1. Write pending marker
+    2. Create topic
+    3. Send setup message
+    4. Complete marker + registry
+    5. Send completion message
+
+    Returns task_data dict on success, None if not configured/name collision/pending.
     Raises TopicCreationError if topic creation fails.
     """
     config = get_config()
@@ -360,21 +367,42 @@ def register_existing_session(directory: str, task_name: str) -> dict | None:
     if registry.get_task(task_name):
         return None
 
-    # Create topic (raises TopicCreationError on failure)
+    # Check for existing marker
+    existing = read_marker_file(directory)
+    if existing:
+        if existing.get("topic_id"):
+            # Already registered, just return existing data
+            task_data = {
+                "type": existing.get("type", "session"),
+                "path": directory,
+                "topic_id": existing["topic_id"],
+                "status": "active",
+            }
+            registry.add_task(existing.get("name", task_name), task_data)
+            log(f"Recovered from existing marker: {task_name}")
+            return task_data
+        if existing.get("pending_topic_name"):
+            # Pending recovery in progress, skip
+            log(f"Pending recovery for {directory}, skipping")
+            return None
+
+    # Step 1: Write pending marker
+    write_marker_file_pending(directory, task_name)
+
+    # Step 2: Create topic (raises TopicCreationError on failure)
     bot_token = _get_bot_token()
     topic_result = create_forum_topic(bot_token, str(config.group_id), task_name)
     topic_id = topic_result.get("message_thread_id")
 
-    # Write marker file (session already exists, we don't create tmux session)
-    marker_data = {
-        "name": task_name,
-        "type": "session",
-        "topic_id": topic_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    write_marker_file(directory, marker_data)
+    # Step 3: Send setup message
+    setup_msg = escape_markdown_v2(
+        f"Setup in progress for {task_name}. "
+        "If you don't see 'Setup complete' in a few seconds, reply with the task name."
+    )
+    send_to_topic(bot_token, str(config.group_id), topic_id, setup_msg)
 
-    # Update registry (pane will be updated when we detect it)
+    # Step 4: Complete marker + registry
+    complete_pending_marker(directory, task_name, topic_id)
     task_data = {
         "type": "session",
         "path": directory,
@@ -382,6 +410,10 @@ def register_existing_session(directory: str, task_name: str) -> dict | None:
         "status": "active",
     }
     registry.add_task(task_name, task_data)
+
+    # Step 5: Send completion message
+    send_to_topic(bot_token, str(config.group_id), topic_id,
+                  escape_markdown_v2("Setup complete"))
 
     log(f"Registered existing session: {task_name} at {directory}")
     return task_data

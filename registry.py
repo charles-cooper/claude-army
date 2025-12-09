@@ -111,6 +111,18 @@ class Config:
         """Check if Claude Army is configured."""
         return self.group_id is not None
 
+    # Topic mappings (for crash recovery)
+    def store_topic_mapping(self, topic_id: int, name: str):
+        """Store topic_id -> name mapping (for crash recovery)."""
+        mappings = self.get("topic_mappings", {})
+        mappings[str(topic_id)] = name
+        self.set("topic_mappings", mappings)
+
+    def get_topic_name(self, topic_id: int) -> str | None:
+        """Get topic name from mapping."""
+        mappings = self.get("topic_mappings", {})
+        return mappings.get(str(topic_id))
+
     def clear(self):
         """Clear all configuration."""
         self._config_cache = {}
@@ -219,6 +231,49 @@ def remove_marker_file(directory: str) -> bool:
 def is_managed_directory(directory: str) -> bool:
     """Check if directory has a Claude Army marker."""
     return get_marker_path(directory).exists()
+
+
+# ============ Pending Marker Functions (crash recovery) ============
+
+def write_marker_file_pending(directory: str, task_name: str):
+    """Write pending marker before topic creation (crash recovery)."""
+    from datetime import datetime, timezone
+    data = {
+        "pending_topic_name": task_name,
+        "pending_since": datetime.now(timezone.utc).isoformat()
+    }
+    write_marker_file(directory, data)
+
+
+def complete_pending_marker(directory: str, task_name: str, topic_id: int, task_type: str = "session"):
+    """Complete a pending marker by adding topic_id and task metadata."""
+    from datetime import datetime, timezone
+    data = {
+        "name": task_name,
+        "type": task_type,
+        "topic_id": topic_id,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    write_marker_file(directory, data)
+
+
+def get_pending_markers() -> list[dict]:
+    """Find all markers with pending_topic_name but no topic_id."""
+    markers = scan_for_marker_files()
+    return [m for m in markers if m.get("pending_topic_name") and not m.get("topic_id")]
+
+
+def get_pending_marker_names() -> list[str]:
+    """Get names of all pending markers."""
+    return [m["pending_topic_name"] for m in get_pending_markers()]
+
+
+def find_pending_marker_by_name(task_name: str) -> dict | None:
+    """Find a pending marker by task name. Returns marker data with 'path' or None."""
+    for marker in get_pending_markers():
+        if marker.get("pending_topic_name") == task_name:
+            return marker
+    return None
 
 
 def scan_for_marker_files(search_paths: list[str] = None) -> list[dict]:

@@ -10,7 +10,10 @@ from telegram_utils import (
     State, answer_callback, send_reply, update_message_buttons, log, send_to_tmux_pane
 )
 from bot_commands import CommandHandler
-from registry import get_config
+from registry import (
+    get_config, get_registry, find_pending_marker_by_name, get_pending_marker_names,
+    complete_pending_marker
+)
 from session_operator import send_to_operator
 from session_worker import send_to_worker, get_worker_pane_for_topic
 
@@ -162,7 +165,9 @@ class TelegramPoller:
         self.chat_id = chat_id
         self.state = state
         self.timeout = timeout
-        self.offset = 0
+        # Load offset from config for crash recovery (don't miss forum_topic_created events)
+        config = get_config()
+        self.offset = config.get("telegram_offset", 0)
         self.command_handler = CommandHandler(bot_token, chat_id, state)
 
     def poll(self) -> list[dict]:
@@ -178,8 +183,10 @@ class TelegramPoller:
             updates = resp.json().get("result", [])
             if updates:
                 log(f"Got {len(updates)} updates")
-            for update in updates:
-                self.offset = update["update_id"] + 1
+                for update in updates:
+                    self.offset = update["update_id"] + 1
+                # Persist offset for crash recovery
+                get_config().set("telegram_offset", self.offset)
             return updates
         except Exception as e:
             log(f"Telegram poll error: {e}")
@@ -427,6 +434,12 @@ class TelegramPoller:
             if self._handle_reply_to_tracked(msg, reply_to, text, chat_id):
                 return
 
+        # Check for unknown topic recovery (topic exists but not in registry)
+        registry = get_registry()
+        if topic_id and not registry.find_task_by_topic(topic_id):
+            if self._try_recover_topic(msg, topic_id):
+                return
+
         # Route task topic messages to worker
         worker_pane = get_worker_pane_for_topic(topic_id) if topic_id else None
         if worker_pane:
@@ -440,17 +453,72 @@ class TelegramPoller:
             self._route_message(msg, lambda m: send_to_worker(topic_id, m), f"worker (topic {topic_id})")
             return
 
+    def _try_recover_topic(self, msg: dict, topic_id: int) -> bool:
+        """Try to recover an unknown topic. Returns True if handled."""
+        config = get_config()
+        registry = get_registry()
+        chat_id = str(msg.get("chat", {}).get("id"))
+        msg_id = msg.get("message_id")
+        text = msg.get("text", "")
+
+        # Try stored mapping first
+        name = config.get_topic_name(topic_id)
+        if name:
+            pending = find_pending_marker_by_name(name)
+            if pending:
+                directory = pending.get("path")
+                complete_pending_marker(directory, name, topic_id)
+                task_data = {"type": "session", "path": directory, "topic_id": topic_id, "status": "active"}
+                registry.add_task(name, task_data)
+                send_reply(self.bot_token, chat_id, msg_id, f"✓ Recovered task: {name}")
+                log(f"Recovered pending task via mapping: {name} -> topic {topic_id}")
+                return True
+
+        # Check if message text matches a pending marker name
+        pending_names = get_pending_marker_names()
+        if text in pending_names:
+            pending = find_pending_marker_by_name(text)
+            if pending:
+                directory = pending.get("path")
+                complete_pending_marker(directory, text, topic_id)
+                config.store_topic_mapping(topic_id, text)
+                task_data = {"type": "session", "path": directory, "topic_id": topic_id, "status": "active"}
+                registry.add_task(text, task_data)
+                send_reply(self.bot_token, chat_id, msg_id, f"✓ Recovered task: {text}")
+                log(f"Recovered pending task via text match: {text} -> topic {topic_id}")
+                return True
+
+        # Prompt user if there are pending markers
+        if pending_names:
+            names_list = ", ".join(pending_names)
+            send_reply(self.bot_token, chat_id, msg_id,
+                f"⚠️ Unknown topic. Pending tasks: {names_list}\nReply with task name to complete setup.")
+            return True
+
+        return False
+
     def process_updates(self, updates: list[dict]):
         """Process a list of updates."""
         if not updates:
             return
 
+        config = get_config()
+
         for update in updates:
+            # Handle forum_topic_created events (store mapping for crash recovery)
+            msg = update.get("message", {})
+            if msg.get("forum_topic_created"):
+                topic_id = msg.get("message_thread_id")
+                name = msg["forum_topic_created"].get("name")
+                if topic_id and name:
+                    config.store_topic_mapping(topic_id, name)
+                    log(f"Stored topic mapping: {topic_id} -> {name}")
+                continue
+
             callback = update.get("callback_query")
             if callback:
                 self.handle_callback(callback)
                 continue
 
-            msg = update.get("message", {})
             if msg:
                 self.handle_message(msg)
