@@ -47,6 +47,13 @@ class IdleEvent:
 
 
 @dataclass
+class ActivityInfo:
+    """Info about an active session (for typing indicator)."""
+    pane: str
+    cwd: str
+
+
+@dataclass
 class TranscriptWatcher:
     """Watches a single transcript file for new tool_use entries."""
     path: str
@@ -65,14 +72,20 @@ class TranscriptWatcher:
     # Track message IDs that have tool_use (for supersession detection)
     tool_use_msg_ids: set = field(default_factory=set)
 
-    def check(self) -> tuple[list[PendingTool], list[CompactionEvent], list[IdleEvent]]:
-        """Check for new pending tools, compactions, and idle events."""
+    def check(self) -> tuple[list[PendingTool], list[CompactionEvent], list[IdleEvent], bool]:
+        """Check for new pending tools, compactions, idle events, and activity.
+
+        Returns (pending_tools, compactions, idle_events, had_activity).
+        had_activity is True if Claude is actively working (tool_use detected).
+        """
         # Read new lines and update state
+        had_activity = False
         try:
             with open(self.path, 'r') as f:
                 f.seek(self.position)
                 for line in f:
-                    self._process_line(line)
+                    if self._process_line(line):
+                        had_activity = True  # Only count tool_use as "active"
                 self.position = f.tell()
         except FileNotFoundError:
             pass
@@ -112,14 +125,14 @@ class TranscriptWatcher:
                 del self.pending_tools[tool_id]
                 break  # Only return one tool at a time
 
-        return ready_tools, compactions, idle_events
+        return ready_tools, compactions, idle_events, had_activity
 
-    def _process_line(self, line: str):
-        """Process a single transcript line."""
+    def _process_line(self, line: str) -> bool:
+        """Process a single transcript line. Returns True if Claude is actively working."""
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
-            return  # Partial line
+            return False  # Partial line
 
         # Check for compaction event
         if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary":
@@ -131,7 +144,7 @@ class TranscriptWatcher:
                 pane=self.pane,
                 cwd=self.cwd
             ))
-            return
+            return False  # Compaction isn't "active work"
 
         # Track tool_results
         if entry.get("type") == "user":
@@ -144,15 +157,17 @@ class TranscriptWatcher:
                         # Remove from pending if waiting
                         if tool_use_id in self.pending_tools:
                             del self.pending_tools[tool_use_id]
+            return False  # Tool results mean Claude is waiting, not working
 
         # Check for new tool_use
         if entry.get("type") != "assistant":
-            return
+            return False
 
         message = entry.get("message", {})
         msg_id = message.get("id", "")
         assistant_text = ""
         tool_calls = []
+        has_thinking = False
 
         # Collect ALL tool_use from this message (Claude can batch them)
         for c in message.get("content", []):
@@ -161,6 +176,12 @@ class TranscriptWatcher:
                     assistant_text = c.get("text", "")
                 elif c.get("type") == "tool_use":
                     tool_calls.append(c)
+                elif c.get("type") == "thinking":
+                    has_thinking = True
+
+        # Thinking block = Claude is actively working
+        if has_thinking and not tool_calls and not assistant_text:
+            return True  # Trigger typing indicator
 
         # If we see tool_use, mark that this message is not idle
         if tool_calls and msg_id:
@@ -181,10 +202,11 @@ class TranscriptWatcher:
                     msg_id=msg_id
                 ))
                 self.last_idle_msg_id = msg_id
-            return
+                return True  # Trigger typing - will be cancelled by idle message
+            return False
 
         if not tool_calls:
-            return
+            return False
 
         # Process each tool_use in order (TUI shows them sequentially)
         for tool_call in tool_calls:
@@ -214,6 +236,8 @@ class TranscriptWatcher:
                 cwd=self.cwd,
                 detected_at=time.time()
             )
+
+        return True  # tool_use = Claude is actively working
 
 
 def decode_cwd_from_path(transcript_path: str) -> str:
@@ -357,14 +381,17 @@ class TranscriptManager:
                 del self.pane_to_transcript[pane]
             log(f"Stopped watching (pane dead): {path}")
 
-    def check_all(self) -> tuple[list[PendingTool], list[CompactionEvent], list[IdleEvent]]:
-        """Check all watchers for pending tools, compactions, and idle events."""
+    def check_all(self) -> tuple[list[PendingTool], list[CompactionEvent], list[IdleEvent], list[ActivityInfo]]:
+        """Check all watchers for pending tools, compactions, idle events, and activity."""
         all_tools = []
         all_compactions = []
         all_idle = []
+        all_activity = []
         for watcher in self.watchers.values():
-            tools, compactions, idle_events = watcher.check()
+            tools, compactions, idle_events, had_activity = watcher.check()
             all_tools.extend(tools)
             all_compactions.extend(compactions)
             all_idle.extend(idle_events)
-        return all_tools, all_compactions, all_idle
+            if had_activity:
+                all_activity.append(ActivityInfo(pane=watcher.pane, cwd=watcher.cwd))
+        return all_tools, all_compactions, all_idle, all_activity

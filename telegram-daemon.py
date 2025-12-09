@@ -23,10 +23,10 @@ from pathlib import Path
 from telegram_utils import (
     State, pane_exists,
     format_tool_permission, strip_home, escape_markdown_v2,
-    send_telegram, send_to_topic, log, update_message_buttons, delete_message,
+    send_telegram, send_to_topic, send_chat_action, log, update_message_buttons, delete_message,
     register_bot_commands, NoTopicRightsError, TopicCreationError
 )
-from transcript_watcher import TranscriptManager, PendingTool, CompactionEvent, IdleEvent
+from transcript_watcher import TranscriptManager, PendingTool, CompactionEvent, IdleEvent, ActivityInfo
 from telegram_poller import TelegramPoller
 from registry import get_config, get_registry, is_managed_directory
 from session_operator import is_operator_pane
@@ -328,6 +328,29 @@ def send_compaction_notification(bot_token: str, chat_id: str, event: Compaction
     log(f"Notified: compaction ({event.trigger})")
 
 
+def send_typing_indicator(bot_token: str, activity: ActivityInfo):
+    """Send typing indicator to the appropriate topic for this activity."""
+    config = get_config()
+    if not config.is_configured():
+        return
+
+    group_id = str(config.group_id)
+    registry = get_registry()
+
+    # Determine topic_id based on pane/cwd
+    if is_operator_pane(activity.pane):
+        topic_id = config.general_topic_id
+    else:
+        result = registry.find_task_by_path(activity.cwd)
+        if result:
+            _, task_data = result
+            topic_id = task_data.get("topic_id")
+        else:
+            topic_id = config.general_topic_id
+
+    send_chat_action(bot_token, group_id, "typing", topic_id)
+
+
 def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent, state: State) -> int | None:
     """Send Telegram notification when Claude is waiting for input. Returns message_id."""
     msg = event.text
@@ -432,8 +455,13 @@ def main():
                 auto_register_discovered_sessions(bot_token, chat_id, transcript_mgr)
                 last_discover = now
 
-            # Check transcripts for new tool_use, compactions, and idle events
-            pending_tools, compactions, idle_events = transcript_mgr.check_all()
+            # Check transcripts for new tool_use, compactions, idle events, and activity
+            pending_tools, compactions, idle_events, activity = transcript_mgr.check_all()
+
+            # Send typing indicators FIRST (will be cancelled by subsequent messages)
+            for act in activity:
+                send_typing_indicator(bot_token, act)
+
             for tool in pending_tools:
                 send_notification(bot_token, chat_id, tool, state)
             for event in compactions:
