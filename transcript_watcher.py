@@ -175,6 +175,10 @@ class TranscriptWatcher:
             return False
 
         message = entry.get("message", {})
+
+        # Skip synthetic messages (e.g., "No response requested." when user cancels)
+        if message.get("model") == "<synthetic>":
+            return False
         msg_id = message.get("id", "")
         assistant_text = ""
         tool_calls = []
