@@ -53,7 +53,7 @@ def start_operator_session() -> str | None:
     # Create symlinks to specs if they don't exist
     symlinks = {
         "SPEC.md": "../SPEC.md",
-        "AGENTS.md": "../OPERATOR_AGENTS.md",  # Operator's instructions
+        "AGENTS.md": "../OPERATOR_AGENTS.template.md",  # Operator's instructions
         "CLAUDE.md": "AGENTS.md",  # Claude reads CLAUDE.md by default
     }
     for name, target in symlinks.items():
