@@ -77,7 +77,7 @@ class TranscriptWatcher:
         """Check for new pending tools, compactions, idle events, and activity.
 
         Returns (pending_tools, compactions, idle_events, had_activity).
-        had_activity is True if Claude is actively working (tool_use detected).
+        had_activity is True if any new content was found in transcript.
         """
         # Read new lines and update state
         had_activity = False
@@ -85,8 +85,8 @@ class TranscriptWatcher:
             with open(self.path, 'r') as f:
                 f.seek(self.position)
                 for line in f:
-                    if self._process_line(line):
-                        had_activity = True  # Only count tool_use as "active"
+                    self._process_line(line)
+                    had_activity = True  # Any new content = activity
                 self.position = f.tell()
         except FileNotFoundError:
             pass

@@ -23,9 +23,8 @@ Messages come from Telegram with metadata:
 
 ## Key Files
 
-Read these for system design:
-- `OPERATOR_SPEC.md` - Full architecture and task management
-- `SPEC.md` - Telegram daemon internals
+Read this for system design:
+- `SPEC.md` - Full architecture, task management, and Telegram integration
 
 ## Your Working Directory
 

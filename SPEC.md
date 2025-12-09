@@ -1,29 +1,296 @@
-# Telegram Notifier Specification
+# Claude Army Specification
 
 ## Overview
 
-The daemon watches Claude transcript files for permission prompts and sends Telegram notifications. It also polls Telegram for responses and injects them into Claude via tmux.
+Claude Army is a multi-instance task management system with Telegram integration. It manages multiple Claude instances working on separate tasks in isolated git worktrees, with an Operator Claude interpreting user instructions and managing Worker Claudes.
 
 **Architecture:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 Telegram Forum Group                        │
+├─────────────────────────────────────────────────────────────┤
+│  General Topic              │  Task Topics                  │
+│  ────────────────           │  ────────────                 │
+│  User ↔ Operator Claude     │  feature-x: Worker Claude A   │
+│  Natural language commands  │  fix-bug-123: Worker Claude B │
+│  Setup, status, management  │  refactor-api: Worker Claude C│
+└──────────────┬──────────────┴───────────────┬───────────────┘
+               │                              │
+               ▼                              ▼
+       ┌───────────────┐            ┌─────────────────┐
+       │ Operator      │            │ Worker Sessions │
+       │ tmux session  │            │ (per worktree)  │
+       │ ~/claude-army │            │ repo/trees/X    │
+       └───────────────┘            └─────────────────┘
+               │                              │
+               └──────────────┬───────────────┘
+                              ▼
+                    ┌─────────────────┐
+                    │     Daemon      │
+                    │ - Watches all   │
+                    │   transcripts   │
+                    │ - Routes to     │
+                    │   correct topic │
+                    │ - Handles input │
+                    └─────────────────┘
+```
+
+**Components:**
 - `telegram-daemon.py` - Main daemon, orchestrates transcript watching and Telegram polling
-- `transcript_watcher.py` - Watches transcript files for new tool_use entries and compaction events
+- `transcript_watcher.py` - Watches transcript files for tool_use and compaction events
 - `telegram_poller.py` - Handles Telegram updates (callbacks, messages)
 - `telegram_utils.py` - Shared utilities (formatting, state, API calls)
+- `registry.py` - Task registry and configuration management
+- `session_operator.py` - Operator Claude session management
+- `session_worker.py` - Worker Claude session management
+- `bot_commands.py` - Bot command handlers
+
+## Core Concepts
+
+### Task Types
+
+| Type | Directory | Topic | Cleanup |
+|------|-----------|-------|---------|
+| **Worktree Task** | Created by us (`repo/trees/{name}/`) | Long-lived (PR/branch work) | Delete worktree + close topic |
+| **Session** | Any existing directory | Ephemeral (focused work) | Remove marker + close topic (preserve dir) |
+
+Both types:
+- Have `.claude/army.json` marker file
+- Have a dedicated Telegram topic
+- Are recoverable from filesystem scan
+
+### Source of Truth Hierarchy
+
+1. **Marker files** - `.claude/army.json` defines tasks (inside Claude's own state dir)
+2. **Registry** - Cache at `~/claude-army/operator/registry.json` (rebuildable from markers)
+3. **tmux sessions** - Ephemeral, resurrected as needed
+
+## Directory Structure
+
+```
+~/claude-army/                    # Project root (daemon runs here)
+  telegram-daemon.py              # Daemon process
+  operator/                       # Operator Claude's working directory (gitignored)
+    registry.json                 # Cache (rebuildable from .claude/army.json files)
+    config.json                   # Group ID, topic IDs, etc.
+    .claude/                      # Operator's Claude state (conversations, settings)
+  ...
+
+~/projects/myrepo/                # User's repository
+  trees/
+    feature-x/                    # Worktree for task
+      .claude/
+        army.json                 # Marker file (inside Claude's state dir)
+        ...                       # Claude's conversation state
+
+~/projects/other-project/         # Existing directory (session, not worktree)
+  .claude/
+    army.json                     # Session marker
+```
+
+### Marker File Format
+
+```json
+// .claude/army.json (same format for worktree and session)
+{
+  "name": "feature-x",
+  "type": "worktree",             // or "session"
+  "repo": "/home/user/myrepo",    // only for worktrees
+  "description": "Add dark mode support",
+  "topic_id": 123456,
+  "created_at": "2025-01-01T00:00:00Z"
+}
+```
+
+### Registry Cache Format
+
+```json
+// operator/registry.json (rebuildable from .claude/army.json scans)
+{
+  "tasks": {
+    "feature-x": {
+      "type": "worktree",
+      "path": "/home/user/myrepo/trees/feature-x",
+      "repo": "/home/user/myrepo",
+      "topic_id": 123,
+      "status": "active",
+      "pane": "ca-feature-x:0.0"
+    }
+  }
+}
+```
+
+Note: `group_id`, `general_topic_id`, and `operator_pane` are in `config.json`, not registry.
+
+## Telegram Setup
+
+### Initial Setup Flow
+
+1. User creates Telegram group, adds bot as admin
+2. User enables Topics in group settings
+3. User sends `/setup` in group
+4. Bot stores `group_id` in config
+5. Daemon starts Operator Claude session
+
+### Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/setup` | Initialize group as control center |
+| `/reset` | Remove configuration |
+| `/status` | Show all tasks and status |
+| `/recover` | Rebuild registry from marker files |
+| `/help` | Show available commands |
+| `/todo <item>` | Add todo to Operator queue |
+| `/debug` | Debug a message (reply to it) |
+
+Commands are registered via `setMyCommands` API at startup.
+
+### Topic Structure
+
+- **General** - Operator Claude, management commands, fallback notifications
+- **task-name** - One per task, Worker Claude notifications
+
+## Operator Claude
+
+### Role
+
+- Runs in `~/claude-army/operator` directory
+- Receives all messages from General topic
+- Interprets user intent (natural language)
+- Manages tasks (spawn, status, cleanup)
+- Manages todo queue - receives todos from any topic, decides routing/priority
+- Goes through permission prompts for actions
+
+### Example Interactions
+
+```
+User: "Can you look into the memory leak in vyper?"
+Operator: [identifies repo ~/vyper, creates task description]
+  → Permission prompt: "Create worktree vyper/trees/fix-memory-leak?"
+  → User approves
+Operator: "Created task 'fix-memory-leak' in vyper. Worker Claude is investigating."
+
+User: "What's the status of all tasks?"
+Operator: [scans worktrees, checks sessions]
+Operator: "3 active tasks:
+  - vyper/fix-memory-leak: Running, last activity 2m ago
+  - myrepo/feature-x: Idle, waiting for input
+  - myrepo/refactor-api: Paused"
+```
+
+### Available Actions
+
+| Action | Triggers | Permission Required |
+|--------|----------|---------------------|
+| Spawn worktree task | User request | Yes (creates worktree) |
+| Spawn session | User request | Yes (creates topic) |
+| List tasks | User request | No |
+| Task status | User request | No |
+| Pause task | User request | No |
+| Resume task | User request | No |
+| Cleanup worktree task | User request | Yes (deletes worktree) |
+| Cleanup session | User request | Yes (closes topic) |
+
+## Worker Claude Sessions
+
+### Lifecycle
+
+```
+Spawn Worktree Task:
+  1. Create git worktree from master
+  2. Create Telegram topic
+  3. Write .claude/army.json marker
+  4. Create tmux session
+  5. Start Claude with task description
+
+Spawn Session (existing directory):
+  1. Verify directory exists
+  2. Create Telegram topic
+  3. Write .claude/army.json marker
+  4. Create tmux session
+  5. Start Claude with task description
+
+Auto-register (daemon discovers Claude):
+  1. Daemon sees new transcript
+  2. Create Telegram topic
+  3. Write .claude/army.json marker
+  4. Task is now tracked and routable
+
+Running:
+  - Notifications → task topic
+  - User replies → Worker Claude
+  - Permission prompts → task topic buttons
+
+Death (crash, reboot):
+  - Daemon detects missing session
+  - Resurrects: `claude --continue` in directory
+  - Topic continues working
+
+Cleanup (worktree):
+  - Kill session
+  - Delete worktree (removes directory + .claude/army.json)
+  - Close topic
+
+Cleanup (session):
+  - Kill session
+  - Remove .claude/army.json (preserve directory)
+  - Close topic
+```
+
+### tmux Session Naming
+
+Short names for easy mobile access:
+```
+Operator: ca-op
+Workers: ca-{task_name}
+```
+
+The `ca-` prefix (claude-army) avoids collisions with user sessions.
+
+### Claude Startup
+
+- **Operator**: `claude --continue || claude` (fall back to fresh if no conversation)
+- **New worker task**: `claude "<task description>"`
+- **Worker resume after death**: `claude --continue || claude "<task description>"`
+
+### Post-Worktree Setup Hook
+
+If a repo contains `.claude-army-setup.sh` (in repo root), it runs after worktree creation:
+
+```bash
+#!/bin/bash
+# .claude-army-setup.sh - runs in new worktree directory
+ln -sf ~/shared/.env .env
+ln -sf ../main/node_modules node_modules
+```
+
+Environment variables: `TASK_NAME`, `REPO_PATH`, `WORKTREE_PATH`
 
 ## Transcript Watching
 
 ### Discovery
+
 The daemon discovers transcripts via:
 1. State file entries (transcripts from previous notifications)
 2. tmux panes (scans `~/.claude/projects/{encoded-cwd}/*.jsonl`)
 
 ### Polling
+
 - Reads from last known position (append-only file)
 - Checks every ~1 second
 - Detects new `tool_use` entries and sends notifications
 - Tracks `tool_result` entries to prune notified set (memory management)
 
+### Typing Indicator
+
+Sends Telegram "typing" action when any new content is detected in a transcript.
+- Triggers on any new line in transcript (tool_use, thinking, text, etc.)
+- Routed to appropriate topic based on pane/cwd
+- Automatically cancelled when message is sent
+
 ### Transcript Format
+
 JSONL file, each line:
 ```json
 {
@@ -37,7 +304,7 @@ JSONL file, each line:
 }
 ```
 
-Tool results appear as:
+Tool results:
 ```json
 {
   "type": "user",
@@ -49,7 +316,7 @@ Tool results appear as:
 }
 ```
 
-Compaction events appear as:
+Compaction events:
 ```json
 {
   "type": "system",
@@ -60,6 +327,7 @@ Compaction events appear as:
 ```
 
 ### Skipped Tools
+
 These tools are never notified (always auto-approved):
 - `BashOutput`
 - `KillShell`
@@ -67,37 +335,31 @@ These tools are never notified (always auto-approved):
 - `TodoWrite`
 
 ### Batched Tool Calls
+
 Claude can send multiple tool_use in a single message. TUI shows them one at a time.
 
 Handling:
 1. All tool_use from a message are added to `tool_queue` in order
 2. Only the first tool without a result is notified
 3. When tool_result arrives, the next queued tool is notified
-4. This matches TUI behavior (one permission dialog at a time)
-
-```
-Claude sends: tool_use A, B, C
-Queue: [A, B, C]
-Notify: A only
-User approves A → tool_result A
-Queue: [B, C]
-Notify: B
-...
-```
 
 ### Batch Denial
+
 Denying one tool in a batch interrupts all queued tools (Claude behavior).
 When user denies via Telegram, all other pending permission prompts for the same pane are expired with "❌ Denied via batch denial".
 
 ### Idle Detection
+
 Text-only assistant messages (no tool_use) trigger idle notifications immediately.
 - Tracked by Claude message ID (`message.id`)
-- If tool_use appears for the same message ID within 4 seconds, notification is deleted (supersession)
+- If tool_use appears for the same message ID within 4 seconds, notification is deleted (false positive)
+- If tool_use appears after 4 seconds, notification is marked superseded (kept for reply capability)
 - If no tool_use appears, notification stays (Claude is waiting for input)
 
 ## Notifications
 
 ### Message Format
+
 ```
 `project-name`
 
@@ -113,10 +375,10 @@ _description_
 ```
 
 ### Buttons
-Permission prompts get three buttons:
-- `✓ Allow` (callback_data: "y")
-- `✓ Always: {tool_name}` (callback_data: "a")
-- `✗ Deny` (callback_data: "n")
+
+Permission prompts get two buttons:
+- `Allow` (callback_data: "y")
+- `Deny (or reply)` (callback_data: "n")
 
 ### Tool Formatting
 
@@ -130,25 +392,27 @@ Permission prompts get three buttons:
 | Other | JSON of input |
 
 ### Markdown Handling
+
 All messages use MarkdownV2 for consistency. Escaping approach:
-- Text outside code blocks: escape all special chars (`\_*[]()~\`>#+-=|{}.!`)
-- Code blocks (```...```): preserve as-is, only replace ``` with ''' inside
-- Inline code (`...`): preserve as-is
+- Text outside code blocks: escape all special chars
+- Code blocks: preserve as-is, only replace ``` with ''' inside
+- Inline code: preserve as-is
 
-`escape_markdown_v2()` escapes all special chars for plain text.
-`format_tool_permission()` accepts `markdown_v2=True` to escape text pieces before assembly.
+### Notification Routing
 
-### State Flushing
-State is written to disk immediately after every modification:
-- After sending notifications (idle, permission, compaction)
-- After handling callbacks (button clicks)
-- After marking messages as handled/superseded
+```python
+def route_notification(pane, notification):
+    worktree_path = get_worktree_for_pane(pane)
 
-### Superseded Idle Messages
-When an idle notification gets superseded by tool_use:
-- Message stays in state (marked `superseded: true`)
-- Users can still reply to superseded messages
-- State is preserved for debugging
+    if worktree_path and is_managed_worktree(worktree_path):
+        task = load_marker_file(worktree_path)
+        send_to_topic(task["topic_id"], notification)
+    elif is_operator_pane(pane):
+        send_to_general_topic(notification)
+    else:
+        # Fallback: non-managed Claude session
+        send_to_general_topic(notification, prefix="[unmanaged]")
+```
 
 ## Telegram Polling
 
@@ -159,7 +423,7 @@ When an idle notification gets superseded by tool_use:
 {
   "callback_query": {
     "id": "...",
-    "data": "y" | "a" | "n" | "_",
+    "data": "y" | "n" | "_",
     "message": {"message_id": 123, "chat": {"id": 456}}
   }
 }
@@ -182,24 +446,25 @@ When an idle notification gets superseded by tool_use:
 | Action | Condition | tmux Keys |
 |--------|-----------|-----------|
 | Allow | `data="y"` | Enter |
-| Always | `data="a"` | Down Enter |
 | Deny | `data="n"` | Down Down Enter |
 | Text reply | Reply to permission msg | Down Down + text + Enter |
 
 ### Button Updates
+
 After action:
 - Allow → "✓ Allowed"
-- Always → "✓ Always: {tool_name}"
-- Deny → "📝 Reply with instructions"
+- Deny → "📝 Reply"
 - Text reply → "💬 Replied"
 - Stale → "⏰ Expired"
 
 ### Smart Notification Deletion
+
 Tool notifications track `notified_at` timestamp. When tool_result arrives:
 - If < 4 seconds elapsed: delete notification (was auto-approved, false positive)
 - If >= 4 seconds elapsed: mark as expired (was TUI-handled, user may want to see it)
 
 ### Text Reply Logic
+
 1. Find pane and transcript_path from replied-to message
 2. Check transcript for pending tool_use
 3. If pending:
@@ -208,19 +473,16 @@ Tool notifications track `notified_at` timestamp. When tool_result arrives:
 4. If no pending → regular input
 
 ### Permission Protection
+
 New messages (not replies) are blocked if there's a pending permission on the target pane.
 This prevents accidental approval when Enter is sent to a pane with an active prompt.
-
-Applies to:
-- Messages to General topic (operator pane)
-- Messages to task topics (worker panes)
-- DMs (operator pane)
 
 User sees: "⚠️ There's a pending permission prompt. Reply to that message to respond, or click Allow/Deny."
 
 ## State Management
 
 ### State File
+
 `/tmp/claude-telegram-state.json`:
 ```json
 {
@@ -236,7 +498,7 @@ User sees: "⚠️ There's a pending permission prompt. Reply to that message to
 }
 ```
 
-Idle notifications use:
+Idle notifications:
 ```json
 {
   "message_id": {
@@ -244,71 +506,88 @@ Idle notifications use:
     "type": "idle",
     "claude_msg_id": "msg_01...",
     "cwd": "/path/to/project",
+    "transcript_path": "/path/to/transcript.jsonl",
     "notified_at": 1234567890.123
   }
 }
 ```
 
 ### Cleanup
+
 Every 5 minutes:
 - Remove entries for dead tmux panes
 - Remove watchers for dead panes
 
 ### Memory Management
+
 - `notified_tools` set pruned when tool_result seen
 - Watchers removed when pane dies
 - State entries removed when pane dies
 
-## Config File
-`~/telegram.json`:
-```json
-{
-  "bot_token": "123456:ABC...",
-  "chat_id": "123456789"
-}
-```
+## Registry Recovery
 
-## File Locations
+If `operator/registry.json` is corrupted/lost:
+
+1. Scan for marker files: `find ~ -name "army.json" -path "*/.claude/*"`
+2. For each `.claude/army.json` found:
+   - Read task metadata (name, type, topic_id)
+   - Add to registry
+3. All tasks (worktree and session) are recovered
+
+Use `/recover` command to trigger this manually.
+
+## Config Files
 
 | File | Purpose |
 |------|---------|
-| `~/telegram.json` | Bot credentials |
+| `~/telegram.json` | Bot credentials (`bot_token`, `chat_id`) |
+| `operator/config.json` | Group ID, operator pane |
+| `operator/registry.json` | Task cache |
 | `/tmp/claude-telegram-state.json` | Message tracking |
-| `/tmp/claude-telegram-state.lock` | File lock |
-| `/tmp/claude-telegram-daemon.log` | Daemon log |
-
-## Bot Commands
-
-Commands registered at startup.
-
-### Registering Commands
-Commands are registered via the `setMyCommands` API at startup:
-```
-POST https://api.telegram.org/bot{token}/setMyCommands
-{
-  "commands": [
-    {"command": "debug", "description": "Debug a message (reply to it)"}
-  ]
-}
-```
-
-### /debug Command
-When user replies `/debug` to a notification:
-1. Look up the message in state
-2. Format debug info (type, pane, timestamps, tool info, etc.)
-3. Send debug info TO THE PANE as Claude input (not back to Telegram)
-4. Claude can then analyze the issue
-
-This allows remote debugging - user identifies problem message, Claude receives context.
+| `/tmp/claude-telegram-daemon.pid` | Daemon PID |
 
 ## Claude Code TUI Behavior
 
 ### Permission Prompt Options
+
 1. **Yes** - Accept and run the tool
 2. **Yes, and don't ask again** - Accept and add to allow list
 3. **Tell Claude something else** - Reject with custom instructions
 
 ### tmux Commands
+
 - `tmux has-session -t {pane}` - check pane exists
+- `tmux send-keys -t {pane} -l {text}` - send literal text
 - `tmux send-keys -t {pane} {key}` - send keystrokes
 - `tmux list-panes -a -F '...'` - discover panes
+
+## Implementation Status
+
+### Phase 1: Foundation ✓
+- [x] Telegram Forum setup (`/setup` command)
+- [x] Topic creation API integration
+- [x] Registry cache implementation
+- [x] Config management with auto-reload
+
+### Phase 2: Operator Claude ✓
+- [x] Operator tmux session management
+- [x] Message routing to Operator pane
+- [x] Operator response capture and send to Telegram
+
+### Phase 3: Task Management ✓
+- [x] Spawn worktree task (create worktree, topic, marker, session)
+- [x] Spawn session (create topic, marker for existing directory)
+- [x] Auto-register discovered sessions (daemon writes marker)
+- [x] Notification routing by task (lookup in registry)
+- [x] Cleanup (worktree vs session behavior)
+- [x] Permission warning when bot lacks Manage Topics rights
+
+### Phase 4: Session Lifecycle ✓
+- [x] Worker session resurrection on death
+- [x] Pause/resume functionality
+- [ ] Status indicators in topic names (stub exists, not implemented)
+
+### Phase 5: Recovery & Polish
+- [x] Registry recovery from `.claude/army.json` scans (`/recover`)
+- [x] Natural language command interpretation (via Operator)
+- [ ] Cleanup after PR merge (not automated)

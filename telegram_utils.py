@@ -378,19 +378,6 @@ def send_to_topic(bot_token: str, chat_id: str, topic_id: int, text: str,
     return resp.json()
 
 
-def pin_message(bot_token: str, chat_id: str, msg_id: int, disable_notification: bool = True) -> bool:
-    """Pin a message in a chat. Returns True on success."""
-    resp = requests.post(
-        f"https://api.telegram.org/bot{bot_token}/pinChatMessage",
-        json={
-            "chat_id": chat_id,
-            "message_id": msg_id,
-            "disable_notification": disable_notification
-        }
-    )
-    return resp.ok
-
-
 def get_chat_administrators(bot_token: str, chat_id: str) -> list | None:
     """Get list of chat administrators. Returns None on error."""
     resp = requests.post(
