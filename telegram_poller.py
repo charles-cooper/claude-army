@@ -7,7 +7,7 @@ import time
 import requests
 
 from telegram_utils import (
-    State, pane_exists, answer_callback, send_reply, update_message_buttons, log,
+    State, answer_callback, send_reply, update_message_buttons, log,
     react_to_message
 )
 from bot_commands import CommandHandler
@@ -69,18 +69,23 @@ def send_to_pane(pane: str, text: str) -> bool:
         return False
 
 
-def send_text_to_permission_prompt(pane: str, text: str) -> bool:
-    """Send text reply to a permission prompt (option 3)."""
+def send_text_to_permission_prompt(pane: str, text: str, already_at_input: bool = False) -> bool:
+    """Send text reply to a permission prompt.
+
+    If already_at_input=True, assumes text input is already open (user clicked Deny).
+    Otherwise, navigates to option 3 first.
+    """
     try:
-        subprocess.run(["tmux", "send-keys", "-t", pane, "C-u"], check=True)
-        time.sleep(0.02)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
-        time.sleep(0.02)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
-        time.sleep(0.02)
-        # Select option 3 to activate text input
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-        time.sleep(0.1)
+        if not already_at_input:
+            subprocess.run(["tmux", "send-keys", "-t", pane, "C-u"], check=True)
+            time.sleep(0.02)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
+            time.sleep(0.02)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
+            time.sleep(0.02)
+            # Select option 3 to activate text input
+            subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+            time.sleep(0.1)
         subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text], check=True)
         time.sleep(0.1)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
@@ -131,6 +136,18 @@ def get_action_label(action: str, tool_name: str = None) -> str:
 
 class TelegramPoller:
     """Polls Telegram for updates and handles them."""
+
+    def _has_pending_permission(self, pane: str) -> bool:
+        """Check if there's an unhandled permission prompt for this pane."""
+        for _, entry in self.state.items():
+            if entry.get("pane") != pane:
+                continue
+            if entry.get("type") != "permission_prompt":
+                continue
+            if entry.get("handled"):
+                continue
+            return True
+        return False
 
     def __init__(self, bot_token: str, chat_id: str, state: State, timeout: int = 5):
         # Telegram API requires timeout to be int >= 1
@@ -219,11 +236,15 @@ class TelegramPoller:
         if cb_data in ("y", "n", "a"):
             if is_permission:
                 tool_name = entry.get("tool_name")
-                labels = {"y": "Allowed", "a": f"Always: {tool_name}" if tool_name else "Always allowed", "n": "Denied"}
+                labels = {"y": "Allowed", "a": f"Always: {tool_name}" if tool_name else "Always allowed", "n": "Reply to send feedback"}
                 if send_permission_response(pane, cb_data):
                     answer_callback(self.bot_token, cb_id, labels[cb_data])
                     update_message_buttons(self.bot_token, cb_chat_id, cb_msg_id, get_action_label(cb_data, tool_name))
-                    self.state.update(msg_key, handled=True)
+                    # Don't mark "n" as handled yet - wait for text reply
+                    if cb_data == "n":
+                        self.state.update(msg_key, deny_clicked=True)
+                    else:
+                        self.state.update(msg_key, handled=True)
                     log(f"  Sent {labels[cb_data]} to pane {pane}")
                     # If denied, expire all other pending permission prompts for this pane
                     # (denial interrupts the whole batch in Claude)
@@ -266,19 +287,21 @@ class TelegramPoller:
         if topic_id:
             lines[0] = f"[Telegram msg_id={msg_id} topic={topic_id} from={from_user}]"
 
-        # Include reply context if present
+        # Include reply context if present (but skip if just replying to topic root)
         reply_to = msg.get("reply_to_message")
         if reply_to:
             reply_msg_id = reply_to.get("message_id")
-            reply_text = reply_to.get("text", "")[:200]
-            reply_from = reply_to.get("from", {}).get("first_name", "Unknown")
-            lines.append(f"[Replying to msg_id={reply_msg_id} from {reply_from}]: {reply_text}")
+            # In forum topics, all messages have reply_to pointing to topic root - skip that
+            if reply_msg_id != topic_id:
+                reply_text = reply_to.get("text", "")[:200]
+                reply_from = reply_to.get("from", {}).get("first_name", "Unknown")
+                lines.append(f"[Replying to msg_id={reply_msg_id} from {reply_from}]: {reply_text}")
 
-            # Add state info if we have it
-            reply_str = str(reply_msg_id)
-            if reply_str in self.state:
-                entry = self.state.get(reply_str)
-                lines.append(f"[State: type={entry.get('type')}, pane={entry.get('pane')}]")
+                # Add state info if we have it
+                reply_str = str(reply_msg_id)
+                if reply_str in self.state:
+                    entry = self.state.get(reply_str)
+                    lines.append(f"[State: type={entry.get('type')}, pane={entry.get('pane')}]")
 
         lines.append(text)
         return "\n".join(lines)
@@ -302,6 +325,7 @@ class TelegramPoller:
         """Handle reply to a tracked message. Returns True if handled.
 
         Routing logic:
+        - If reply is to an already-handled permission prompt → warn user
         - If there's a pending permission in transcript:
           - If reply is to that permission → send as permission reply
           - If reply is to different msg → block (must handle pending first)
@@ -318,6 +342,12 @@ class TelegramPoller:
         msg_id = msg.get("message_id")
         transcript_path = entry.get("transcript_path")
 
+        # If replying to an already-handled permission prompt, warn user
+        if entry.get("type") == "permission_prompt" and entry.get("handled"):
+            log(f"  Ignored: reply to already-handled permission prompt")
+            send_reply(self.bot_token, chat_id, msg_id, "⚠️ This permission prompt has already been handled.")
+            return True
+
         # Check transcript for pending tool_use
         pending_tool_id = get_pending_tool_from_transcript(transcript_path)
 
@@ -325,7 +355,9 @@ class TelegramPoller:
             entry_tool_id = entry.get("tool_use_id")
             if entry_tool_id == pending_tool_id:
                 # User is replying to the pending permission
-                if send_text_to_permission_prompt(pane, text):
+                # If deny was already clicked, text input is already open
+                already_at_input = entry.get("deny_clicked", False)
+                if send_text_to_permission_prompt(pane, text, already_at_input):
                     log(f"  Sent to permission prompt on pane {pane}: {text[:50]}...")
                     update_message_buttons(self.bot_token, chat_id, reply_to, "💬 Replied")
                     self.state.update(str(reply_to), handled=True)
@@ -339,7 +371,14 @@ class TelegramPoller:
                 send_reply(self.bot_token, chat_id, msg_id, "⚠️ Ignored: there's a pending permission prompt. Please respond to that first.")
                 return True
         else:
-            # No pending permission - send as regular input to pane
+            # No pending permission in transcript
+            # If replying to a permission_prompt, it was likely handled elsewhere (race condition)
+            if entry.get("type") == "permission_prompt":
+                log(f"  Ignored: reply to permission prompt but no pending tool (race condition)")
+                send_reply(self.bot_token, chat_id, msg_id, "⚠️ This permission prompt was already handled (possibly via TUI).")
+                return True
+
+            # Send as regular input to pane
             if send_to_pane(pane, text):
                 log(f"  Sent to pane {pane}: {text[:50]}...")
                 react_to_message(self.bot_token, chat_id, msg_id)
@@ -368,6 +407,18 @@ class TelegramPoller:
             log(f"  Skipping: not configured")
             return
 
+        # Check for pending permission on operator pane (applies to DMs and General topic)
+        operator_pane = config.operator_pane
+        if operator_pane and self._has_pending_permission(operator_pane):
+            # Route DMs and General topic to operator, but block if permission pending
+            is_dm = msg.get("chat", {}).get("type") == "private"
+            is_general = topic_id is None or topic_id == config.general_topic_id
+            if is_dm or (chat_id == str(config.group_id) and is_general):
+                log(f"  Blocked: pending permission on operator pane")
+                send_reply(self.bot_token, chat_id, msg_id,
+                    "⚠️ There's a pending permission prompt. Reply to that message to respond, or click Allow/Deny.")
+                return
+
         # Route DMs to operator
         if msg.get("chat", {}).get("type") == "private":
             self._route_message(msg, send_to_operator, "operator (DM)")
@@ -390,7 +441,15 @@ class TelegramPoller:
                 return
 
         # Route task topic messages to worker
-        if topic_id and get_worker_pane_for_topic(topic_id):
+        worker_pane = get_worker_pane_for_topic(topic_id) if topic_id else None
+        if worker_pane:
+            # Check for pending permission on this pane
+            if self._has_pending_permission(worker_pane):
+                log(f"  Blocked: pending permission on pane {worker_pane}")
+                send_reply(self.bot_token, chat_id, msg_id,
+                    "⚠️ There's a pending permission prompt. Reply to that message to respond, or click Allow/Deny.")
+                return
+
             self._route_message(msg, lambda m: send_to_worker(topic_id, m), f"worker (topic {topic_id})")
             return
 

@@ -207,6 +207,17 @@ Tool notifications track `notified_at` timestamp. When tool_result arrives:
    - Else → block: "⚠️ Ignored: pending permission prompt"
 4. If no pending → regular input
 
+### Permission Protection
+New messages (not replies) are blocked if there's a pending permission on the target pane.
+This prevents accidental approval when Enter is sent to a pane with an active prompt.
+
+Applies to:
+- Messages to General topic (operator pane)
+- Messages to task topics (worker panes)
+- DMs (operator pane)
+
+User sees: "⚠️ There's a pending permission prompt. Reply to that message to respond, or click Allow/Deny."
+
 ## State Management
 
 ### State File

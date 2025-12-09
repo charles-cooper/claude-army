@@ -364,6 +364,7 @@ def send_idle_notification(bot_token: str, chat_id: str, event: IdleEvent, state
             "type": "idle",
             "claude_msg_id": event.msg_id,
             "cwd": event.cwd,
+            "transcript_path": event.transcript_path,
             "notified_at": time.time()
         })
         log(f"Notified: idle (msg_id={msg_id}, claude_msg_id={event.msg_id[:20]}...)")
@@ -381,7 +382,7 @@ def send_notification(bot_token: str, chat_id: str, tool: PendingTool, state: St
     reply_markup = {
         "inline_keyboard": [[
             {"text": "Allow", "callback_data": "y"},
-            {"text": "Deny", "callback_data": "n"}
+            {"text": "Deny (or reply)", "callback_data": "n"}
         ]]
     }
 

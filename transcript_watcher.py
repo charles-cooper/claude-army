@@ -43,6 +43,7 @@ class IdleEvent:
     text: str
     pane: str
     cwd: str
+    transcript_path: str = ""
     msg_id: str = ""  # Claude message ID for tracking supersession
 
 
@@ -199,6 +200,7 @@ class TranscriptWatcher:
                     text=assistant_text,
                     pane=self.pane,
                     cwd=self.cwd,
+                    transcript_path=self.path,
                     msg_id=msg_id
                 ))
                 self.last_idle_msg_id = msg_id
