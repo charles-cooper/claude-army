@@ -60,6 +60,27 @@ def _get_pane_id(session_name: str) -> str | None:
     return lines[0] if lines else None
 
 
+def _find_pane_by_directory(directory: str) -> str | None:
+    """Find an existing tmux pane with this directory as cwd."""
+    result = subprocess.run(
+        ["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_current_path}"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return None
+
+    directory = os.path.realpath(directory)
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split(" ", 1)
+        if len(parts) == 2:
+            pane, cwd = parts
+            if os.path.realpath(cwd) == directory:
+                return pane
+    return None
+
+
 def _create_tmux_session(session_name: str, directory: str) -> str | None:
     """Create a tmux session in directory. Returns pane ID."""
     result = subprocess.run(
@@ -281,12 +302,18 @@ def spawn_session(directory: str, task_name: str, description: str) -> dict | No
     topic_result = create_forum_topic(bot_token, str(config.group_id), task_name)
     topic_id = topic_result.get("message_thread_id")
 
-    # Create tmux session
-    session_name = _get_session_name(task_name)
-    pane = _create_tmux_session(session_name, directory)
-    if not pane:
-        close_forum_topic(bot_token, str(config.group_id), topic_id)
-        return None
+    # Check for existing tmux pane in this directory
+    existing_pane = _find_pane_by_directory(directory)
+    if existing_pane:
+        log(f"Found existing pane {existing_pane} in {directory}, reusing")
+        pane = existing_pane
+    else:
+        # Create new tmux session
+        session_name = _get_session_name(task_name)
+        pane = _create_tmux_session(session_name, directory)
+        if not pane:
+            close_forum_topic(bot_token, str(config.group_id), topic_id)
+            return None
 
     # Write marker file
     marker_data = {
@@ -308,8 +335,9 @@ def spawn_session(directory: str, task_name: str, description: str) -> dict | No
     }
     registry.add_task(task_name, task_data)
 
-    # Start Claude
-    _start_claude(pane, description)
+    # Only start Claude if we created a new session
+    if not existing_pane:
+        _start_claude(pane, description)
 
     log(f"Spawned session: {task_name} at {directory}")
     return task_data
