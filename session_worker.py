@@ -621,7 +621,15 @@ def send_to_worker(topic_id: int, text: str) -> bool:
     pane = resume_task(task_name)
     if not pane:
         log(f"Failed to get pane for topic {topic_id}")
+        if bot_token and config.group_id:
+            send_to_topic(bot_token, str(config.group_id), topic_id,
+                          escape_markdown_v2(f"❌ Failed to recreate {task_name}"))
         return False
+
+    # Notify recovery complete
+    if bot_token and config.group_id:
+        send_to_topic(bot_token, str(config.group_id), topic_id,
+                      escape_markdown_v2(f"✅ Session recreated"))
 
     return send_to_tmux_pane(pane, text)
 
