@@ -373,8 +373,9 @@ class TelegramPoller:
                 send_reply(self.bot_token, chat_id, msg_id, "⚠️ This permission prompt was already handled (possibly via TUI).")
                 return True
 
-            # Send as regular input to pane
-            if send_to_tmux_pane(pane, text):
+            # Send as regular input to pane (with full context)
+            formatted = self._format_incoming_message(msg)
+            if send_to_tmux_pane(pane, formatted):
                 log(f"  Sent to pane {pane}: {text[:50]}...")
             else:
                 log(f"  Failed (pane {pane} dead)")
@@ -452,6 +453,10 @@ class TelegramPoller:
 
             self._route_message(msg, lambda m: send_to_worker(topic_id, m), f"worker (topic {topic_id})")
             return
+
+        # Fallback: unrecognized topic (e.g., thread reply in General) - route to operator
+        self._route_message(msg, send_to_operator, "operator")
+        return
 
     def _try_recover_topic(self, msg: dict, topic_id: int) -> bool:
         """Try to recover an unknown topic. Returns True if handled."""
