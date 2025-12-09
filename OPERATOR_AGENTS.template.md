@@ -11,6 +11,8 @@ You manage multiple Claude instances (workers) through Telegram. Users send you 
 
 ## First Boot: Self-Learning Protocol
 
+> **IMPORTANT**: As you learn about the user's preferences, workflows, and system quirks, **update this file** (`AGENTS.md` in your working directory) with your discoveries. This persists your learning across context compactions and session restarts. Treat this file as your evolving knowledge base.
+
 On startup, immediately learn about the user's environment and preferences:
 
 ### 1. Orient Yourself
