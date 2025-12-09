@@ -34,6 +34,7 @@ from session_worker import is_worker_pane, register_existing_session
 
 CONFIG_FILE = Path.home() / "telegram.json"
 PID_FILE = Path("/tmp/claude-telegram-daemon.pid")
+DISCOVER_TRIGGER = Path("/tmp/claude-army-discover")
 
 CLEANUP_INTERVAL = 300  # 5 minutes
 
@@ -467,8 +468,12 @@ def main():
         try:
             now = time.time()
 
-            # Periodic discovery of new transcripts (every 30 seconds)
-            if now - last_discover > 30:
+            # Discovery of new transcripts (every 30 seconds, or on trigger)
+            triggered = DISCOVER_TRIGGER.exists()
+            if triggered or now - last_discover > 30:
+                if triggered:
+                    DISCOVER_TRIGGER.unlink(missing_ok=True)
+                    log("Discovery triggered by file")
                 transcript_mgr.discover_transcripts()
                 auto_register_discovered_sessions(bot_token, chat_id, transcript_mgr)
                 last_discover = now

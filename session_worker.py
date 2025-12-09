@@ -27,6 +27,12 @@ from registry import (
 SESSION_PREFIX = "ca-"  # claude-army
 
 SETUP_HOOK_NAME = ".claude-army-setup.sh"
+DISCOVER_TRIGGER = Path("/tmp/claude-army-discover")
+
+
+def trigger_daemon_discovery():
+    """Signal the daemon to discover new transcripts immediately."""
+    DISCOVER_TRIGGER.touch()
 
 
 def _get_bot_token() -> str:
@@ -125,6 +131,8 @@ def _start_claude(pane: str, description: str, resume: bool = False):
         )
         cmd = f"claude {shell_quote(confirm_prompt)}"
     subprocess.run(["tmux", "send-keys", "-t", pane, cmd, "Enter"])
+    # Signal daemon to discover the new transcript immediately
+    trigger_daemon_discovery()
 
 
 def update_topic_status(topic_id: int, task_name: str, status: str):
