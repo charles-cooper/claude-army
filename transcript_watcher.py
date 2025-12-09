@@ -70,8 +70,6 @@ class TranscriptWatcher:
     last_check: float = 0
     # Track last notified message to avoid duplicate idle notifications
     last_idle_msg_id: str = ""
-    # Track message IDs that have tool_use (for supersession detection)
-    tool_use_msg_ids: set = field(default_factory=set)
 
     def check(self) -> tuple[list[PendingTool], list[CompactionEvent], list[IdleEvent], bool]:
         """Check for new pending tools, compactions, idle events, and activity.
@@ -198,12 +196,6 @@ class TranscriptWatcher:
         if has_thinking and not tool_calls and not assistant_text:
             return True  # Trigger typing indicator
 
-        # If we see tool_use, mark that this message is not idle
-        if tool_calls and msg_id:
-            self.tool_use_msg_ids.add(msg_id)
-            # Clear any pending idle for this message
-            if self.last_idle_msg_id == msg_id:
-                self.last_idle_msg_id = ""  # Will be handled by daemon via supersession
 
         # Check for idle event: assistant text with no tool_use
         if assistant_text and not tool_calls and msg_id:

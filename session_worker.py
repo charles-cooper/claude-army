@@ -131,7 +131,8 @@ def _start_claude(pane: str, description: str, resume: bool = False):
         )
         cmd = f"claude {shell_quote(confirm_prompt)}"
     subprocess.run(["tmux", "send-keys", "-t", pane, cmd, "Enter"])
-    # Signal daemon to discover the new transcript immediately
+    # Give Claude a moment to create the transcript file, then signal daemon
+    time.sleep(0.5)
     trigger_daemon_discovery()
 
 

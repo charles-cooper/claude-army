@@ -163,48 +163,6 @@ def expire_old_buttons(bot_token: str, pane: str, state: State, transcript_mgr):
 # If longer, mark expired (user may want to see what happened)
 QUICK_RESPONSE_THRESHOLD = 4.0  # seconds
 
-# If idle message gets superseded by tool_use within this time, delete it
-IDLE_SUPERSESSION_THRESHOLD = 4.0  # seconds
-
-
-def handle_superseded_idle(bot_token: str, state: State, transcript_mgr):
-    """Handle idle notifications that got superseded by tool_use.
-
-    If tool_use appears within 4 seconds, delete the notification (false positive).
-    Otherwise, keep for user reply capability.
-    """
-    config = get_config()
-    if not config.is_configured():
-        return
-    group_id = str(config.group_id)
-    now = time.time()
-
-    for msg_id, entry in list(state.items()):
-        if entry.get("type") != "idle":
-            continue
-        if entry.get("superseded"):
-            continue  # Already handled
-        claude_msg_id = entry.get("claude_msg_id")
-        if not claude_msg_id:
-            continue
-        # Check if this claude message now has tool_use in any watcher
-        for watcher in transcript_mgr.watchers.values():
-            if claude_msg_id in watcher.tool_use_msg_ids:
-                notified_at = entry.get("notified_at", 0)
-                elapsed = now - notified_at if notified_at else 999
-
-                if elapsed < IDLE_SUPERSESSION_THRESHOLD:
-                    # Quick supersession - delete notification (was false positive)
-                    if delete_message(bot_token, group_id, int(msg_id)):
-                        log(f"Deleted idle (superseded in {elapsed:.1f}s): msg_id={msg_id}")
-                    state.remove(msg_id)
-                else:
-                    # Slow supersession - keep for user reply capability
-                    state.update(msg_id, superseded=True)
-                    log(f"Idle superseded (after {elapsed:.1f}s): msg_id={msg_id}")
-                break
-
-
 def handle_completed_tools(bot_token: str, state: State, transcript_mgr):
     """Handle notifications for tools that completed. Delete if quick, expire if slow."""
     config = get_config()
@@ -499,8 +457,6 @@ def main():
             # Handle completed tools (delete quick, expire slow)
             handle_completed_tools(bot_token, state, transcript_mgr)
 
-            # Handle superseded idle notifications (delete if quick, mark if slow)
-            handle_superseded_idle(bot_token, state, transcript_mgr)
             for pane in transcript_mgr.pane_to_transcript:
                 expire_old_buttons(bot_token, pane, state, transcript_mgr)
 
