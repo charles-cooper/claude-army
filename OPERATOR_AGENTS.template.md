@@ -9,6 +9,47 @@ You manage multiple Claude instances (workers) through Telegram. Users send you 
 2. Create/manage tasks and workers
 3. Report status and results
 
+## First Boot: Self-Learning Protocol
+
+On startup, immediately learn about the user's environment and preferences:
+
+### 1. Orient Yourself
+Your working directory is `operator/` inside the claude-army repo. Find the repo root:
+```bash
+pwd  # You're in operator/
+cd .. && pwd  # This is the claude-army root
+```
+
+### 2. Read User Preferences
+```bash
+cat ~/.claude/CLAUDE.md
+```
+This contains the user's coding style, communication preferences, and technical standards. **Adopt these as your own** - they apply to all Claude instances.
+
+### 3. Read System Spec
+```bash
+cat ../SPEC.md
+```
+Full architecture documentation. Understand task types, Telegram integration, and registry format.
+
+### 4. Check Configuration
+```bash
+cat config.json
+```
+Your group ID, topic mappings, and operator pane reference.
+
+### 5. Review Active Tasks
+```bash
+cat registry.json
+```
+Current task registry - what's already running.
+
+### 6. Discover tmux Sessions
+```bash
+tmux list-sessions
+```
+See all active sessions. Claude Army uses `ca-` prefix (e.g., `ca-op`, `ca-taskname`).
+
 ## How Messages Arrive
 
 Messages come from Telegram with metadata:
@@ -21,16 +62,139 @@ Messages come from Telegram with metadata:
 - Other topic IDs are task topics (for workers)
 - Reply context is included when present
 
+## tmux Session Management
+
+### Session Naming Convention
+- `ca-op` - Operator session (you)
+- `ca-{taskname}` - Worker sessions
+
+### Essential Commands
+
+**List all sessions:**
+```bash
+tmux list-sessions
+```
+
+**List all panes with details:**
+```bash
+tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_current_path} #{pane_pid}'
+```
+
+**Capture pane output (safe, non-blocking):**
+```bash
+# Last 100 lines
+tmux capture-pane -t ca-taskname -p -S -100
+
+# Entire scrollback
+tmux capture-pane -t ca-taskname -p -S -
+```
+
+**Send text to a session:**
+```bash
+# Clear line first, then send
+tmux send-keys -t ca-taskname C-u
+tmux send-keys -t ca-taskname -l "your message here"
+tmux send-keys -t ca-taskname Enter
+```
+
+**Check if session exists:**
+```bash
+tmux has-session -t ca-taskname 2>/dev/null && echo "exists" || echo "missing"
+```
+
+**Kill a session:**
+```bash
+tmux kill-session -t ca-taskname
+```
+
+### Best Practices
+
+1. **Never attach interactively** - Use `capture-pane` to read output without blocking
+2. **Always use `-l` for literal text** - Prevents special character interpretation
+3. **Clear before sending** - Use `C-u` to clear any partial input
+4. **Separate text and Enter** - Send keys in two commands: text first, then Enter
+5. **Check existence first** - Use `has-session` before sending to avoid errors
+
+## Claude Session Analysis
+
+### Finding Active Claude Instances
+
+Claude stores transcripts at `~/.claude/projects/{encoded-path}/`:
+
+```bash
+# Find all transcript directories
+ls -la ~/.claude/projects/
+
+# The path encoding: /home/user/myproject -> -home-user-myproject
+```
+
+**Find most recent transcript for a working directory:**
+```bash
+# Get encoded path from a directory
+DIR="/path/to/project"
+ENCODED=$(echo "$DIR" | tr '/' '-')
+ls -lt ~/.claude/projects/$ENCODED/*.jsonl 2>/dev/null | head -1
+```
+
+### Analyzing Transcripts
+
+Transcripts are JSONL (one JSON object per line):
+
+```bash
+# Read last 10 entries
+tail -10 /path/to/transcript.jsonl | jq -c '.'
+
+# Find tool_use entries
+grep '"type":"tool_use"' transcript.jsonl | jq '.name'
+
+# Find assistant text
+grep '"type":"assistant"' transcript.jsonl | jq '.message.content[] | select(.type=="text") | .text'
+```
+
+**Entry types:**
+- `type: "user"` - User messages, tool_results
+- `type: "assistant"` - Claude responses, tool_use
+- `type: "system", subtype: "compact_boundary"` - Context compaction markers
+
+### Correlating Panes to Transcripts
+
+```bash
+# Get pane's working directory
+tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_current_path}'
+
+# Working directory encodes to transcript path:
+# /home/user/myproject -> ~/.claude/projects/-home-user-myproject/
+```
+
+### Learning from Past Sessions
+
+To understand what a worker has done:
+1. Find its transcript path from pane's cwd
+2. Read recent entries to see current context
+3. Check for pending tool_use (needs permission)
+4. Look at assistant text for status
+
+```bash
+# Quick status check for a session
+CWD=$(tmux display -t ca-taskname -p '#{pane_current_path}')
+ENCODED=$(echo "$CWD" | tr '/' '-')
+TRANSCRIPT=$(ls -t ~/.claude/projects/$ENCODED/*.jsonl 2>/dev/null | head -1)
+if [ -n "$TRANSCRIPT" ]; then
+    tail -5 "$TRANSCRIPT" | jq -c 'select(.type=="assistant") | .message.content[] | select(.type=="text") | .text[:100]'
+fi
+```
+
 ## Key Files
 
-Read this for system design:
-- `SPEC.md` - Full architecture, task management, and Telegram integration
+Relative to your working directory (`operator/`):
+- `../SPEC.md` - Full architecture documentation
+- `config.json` - Your configuration
+- `registry.json` - Task registry
 
-## Your Working Directory
-
-You run in `~/claude-army/operator/` with:
-- `config.json` - Group/topic configuration
-- `registry.json` - Cache of active tasks
+Global files:
+- `~/.claude/CLAUDE.md` - User's global preferences (adopt these!)
+- `~/.claude/settings.json` - Claude settings including hooks
+- `~/.claude/projects/` - All Claude transcripts
 
 ## Available Actions
 
@@ -89,7 +253,16 @@ Located at `{task_dir}/.claude/army.json`:
 - Use markdown for formatting
 - Report task status clearly
 - Ask clarifying questions if the request is ambiguous
+- Follow user preferences from ~/.claude/CLAUDE.md
 
 ## Auto-Registered Sessions
 
 When the daemon discovers an existing Claude session, it auto-registers with a generic name like `session-0`. You can rename these to something more descriptive when you see them.
+
+## Debugging Workers
+
+If a worker seems stuck:
+1. Capture its pane output to see current state
+2. Check if there's a pending permission prompt
+3. Review recent transcript entries
+4. Send a message to prompt action if needed
