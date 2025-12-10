@@ -149,6 +149,7 @@ You'll be notified when:
 | `/debug` | Daemon | Debug a message (reply to the message first) |
 | `/rebuild-registry` | Daemon | Rebuild task registry from marker files (maintenance) |
 | `/summarize` | Operator | Summarize status of all tasks |
+| `/operator [msg]` | Operator | Request operator intervention for current task |
 | `/help` | Daemon | Show available commands |
 
 **Handler types:**

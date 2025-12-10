@@ -110,6 +110,34 @@ def build_summarize_prompt(tasks: list[tuple[str, dict]]) -> str:
     return "\n".join(lines)
 
 
+def build_operator_intervention_prompt(task_name: str, task_data: dict, pane_output: str, user_message: str) -> str:
+    """Build prompt for operator to intervene in a stuck session."""
+    lines = ["=" * 40]
+    lines.append("OPERATOR INTERVENTION REQUEST")
+    lines.append("=" * 40)
+    lines.append("")
+    lines.append(f"Task: {task_name}")
+    lines.append(f"Type: {task_data.get('type', 'session')}")
+    lines.append(f"Path: {task_data.get('path', '?')}")
+    lines.append(f"Pane: {task_data.get('pane', '?')}")
+    lines.append("")
+    lines.append("User request:")
+    lines.append(user_message if user_message else "(no message - just get it unstuck)")
+    lines.append("")
+    lines.append("Current pane output:")
+    lines.append("```")
+    lines.append(pane_output)
+    lines.append("```")
+    lines.append("")
+    lines.append("-" * 40)
+    lines.append("Please intervene in this session. You can:")
+    lines.append("- Send tmux commands to the pane")
+    lines.append("- Send text/keystrokes to Claude")
+    lines.append("- Analyze the situation and advise the user")
+    lines.append("-" * 40)
+    return "\n".join(lines)
+
+
 class CommandHandler:
     """Handles bot commands like /debug, /todo, /setup."""
 
@@ -221,6 +249,11 @@ class CommandHandler:
         # /summarize - have operator summarize all tasks
         if text_lower.startswith("/summarize"):
             self._handle_summarize(chat_id, msg_id, topic_id)
+            return True
+
+        # /operator - request operator intervention for current task
+        if text_lower.startswith("/operator"):
+            self._handle_operator(msg, chat_id, msg_id, text, topic_id)
             return True
 
         return False
@@ -442,6 +475,51 @@ class CommandHandler:
         else:
             self._reply(chat_id, msg_id, "Operator not available")
 
+    def _handle_operator(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
+        """Handle /operator - request operator intervention for current task."""
+        import subprocess
+
+        config = get_config()
+        if not config.is_configured():
+            self._reply(chat_id, msg_id, "Not configured. Run /setup first.")
+            return
+
+        # Get user message (everything after /operator)
+        user_message = parse_command_args(text) or ""
+
+        # Get task context - must be from a task topic
+        result = self._get_pane_for_topic(topic_id)
+        if not result:
+            self._reply(chat_id, msg_id, "Send from a task topic to request intervention.")
+            return
+
+        task_name, pane = result
+        if not pane:
+            self._reply(chat_id, msg_id, f"No tmux pane found for '{task_name}'.")
+            return
+
+        # Get task data from registry
+        registry = get_registry()
+        task_data = registry.get_task(task_name) or {"pane": pane}
+
+        # Capture pane output
+        try:
+            output = subprocess.run(
+                ["tmux", "capture-pane", "-t", pane, "-p", "-S", "-50"],
+                capture_output=True, text=True, timeout=5
+            )
+            pane_output = output.stdout.rstrip('\n') if output.returncode == 0 else "(failed to capture)"
+        except Exception:
+            pane_output = "(failed to capture)"
+
+        prompt = build_operator_intervention_prompt(task_name, task_data, pane_output, user_message)
+        if send_to_operator(prompt):
+            self._typing(chat_id, topic_id)
+            log(f"  /operator sent to operator: {task_name}")
+            self._reply_sent_to_operator(chat_id, msg_id, topic_id)
+        else:
+            self._reply(chat_id, msg_id, "Operator not available")
+
     def _handle_spawn(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /spawn - route spawn request to operator."""
         request = parse_command_args(text)
@@ -596,6 +674,7 @@ class CommandHandler:
 /todo <item> - Add todo to Operator queue
 /debug - Show debug info for a message (reply to it)
 /summarize - Have operator summarize all tasks
+/operator [msg] - Request operator intervention for task
 /rebuild-registry - Rebuild registry from markers (maintenance)
 
 *Operator Commands* (natural language):
