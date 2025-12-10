@@ -137,21 +137,23 @@ You'll be notified when:
 
 ### Bot Commands
 
-| Command | Description |
-|---------|-------------|
-| `/setup` | Initialize a Telegram group as the control center |
-| `/status` | Show all active tasks and their status |
-| `/spawn <description>` | Create a new task (routes request to Operator Claude) |
-| `/cleanup [task]` | Clean up a task (kill session, remove worktree if applicable) |
-| `/tmux` | Show tmux attach command for the current topic's session |
-| `/dump` | Dump recent tmux pane output for the current topic |
-| `/todo <item>` | Add todo (writes to TODO.local.md in task topics, routes to Operator in General) |
-| `/debug` | Debug a message (reply to the message first) |
-| `/rebuild-registry` | Rebuild task registry from marker files (maintenance) |
-| `/summarize` | Have Operator summarize status of all tasks |
-| `/help` | Show available commands |
+| Command | Handler | Description |
+|---------|---------|-------------|
+| `/setup` | Daemon | Initialize a Telegram group as the control center |
+| `/status` | Daemon | Show all active tasks and their status |
+| `/spawn <description>` | Operator | Create a new task |
+| `/cleanup [task]` | Operator | Clean up a task (kill session, remove worktree if applicable) |
+| `/tmux` | Daemon | Show tmux attach command for the current topic's session |
+| `/dump` | Daemon | Dump recent tmux pane output for the current topic |
+| `/todo <item>` | Daemon | Add todo to TODO.local.md in task directory |
+| `/debug` | Daemon | Debug a message (reply to the message first) |
+| `/rebuild-registry` | Daemon | Rebuild task registry from marker files (maintenance) |
+| `/summarize` | Operator | Summarize status of all tasks |
+| `/help` | Daemon | Show available commands |
 
-Commands like `/spawn` and `/cleanup` are handled by the Operator Claude, which interprets your request and performs the appropriate actions.
+**Handler types:**
+- **Daemon**: Handled programmatically by the telegram daemon
+- **Operator**: Routed to Operator Claude for interpretation and execution
 
 ## Notification types
 
