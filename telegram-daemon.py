@@ -450,12 +450,14 @@ def main():
             for event in idle_events:
                 send_idle_notification(bot_token, chat_id, event, state)
 
+            # Handle completed tools FIRST (delete quick, expire slow)
+            # Must run before processing Telegram updates so pending permission
+            # state is cleaned up before checking _has_pending_permission
+            handle_completed_tools(bot_token, state, transcript_mgr)
+
             # Process any Telegram updates from background thread
             while not update_queue.empty():
                 telegram_poller.process_updates(update_queue.get_nowait())
-
-            # Handle completed tools (delete quick, expire slow)
-            handle_completed_tools(bot_token, state, transcript_mgr)
 
             for pane in transcript_mgr.pane_to_transcript:
                 expire_old_buttons(bot_token, pane, state, transcript_mgr)
