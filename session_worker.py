@@ -5,6 +5,7 @@ Supports two task types:
 - Session: existing directory, cleanup preserves directory
 """
 
+import glob
 import json
 import os
 import subprocess
@@ -28,6 +29,51 @@ SESSION_PREFIX = "ca-"  # claude-army
 
 SETUP_HOOK_NAME = ".claude-army-setup.sh"
 DISCOVER_TRIGGER = Path("/tmp/claude-army-discover")
+
+CLAUDE_STARTUP_TIMEOUT = 15  # max seconds to wait for Claude to start
+CLAUDE_STARTUP_POLL_INTERVAL = 0.5  # seconds between polls
+
+
+def _get_transcript_for_cwd(cwd: str) -> str | None:
+    """Find the most recent transcript file for a working directory."""
+    encoded = cwd.replace("/", "-")
+    pattern = str(Path.home() / f".claude/projects/{encoded}/*.jsonl")
+    transcripts = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    return transcripts[0] if transcripts else None
+
+
+def wait_for_claude_ready(cwd: str, timeout: float = CLAUDE_STARTUP_TIMEOUT) -> bool:
+    """Wait for Claude to be ready by watching for new transcript activity.
+
+    Returns True if Claude is ready, False if timeout.
+    """
+    start = time.time()
+    initial_transcript = _get_transcript_for_cwd(cwd)
+    initial_size = os.path.getsize(initial_transcript) if initial_transcript else 0
+
+    while time.time() - start < timeout:
+        time.sleep(CLAUDE_STARTUP_POLL_INTERVAL)
+        transcript = _get_transcript_for_cwd(cwd)
+        if not transcript:
+            continue
+
+        # New transcript file created
+        if transcript != initial_transcript:
+            log(f"Claude ready: new transcript created")
+            return True
+
+        # Existing transcript grew
+        try:
+            current_size = os.path.getsize(transcript)
+            if current_size > initial_size:
+                log(f"Claude ready: transcript activity detected")
+                return True
+        except OSError:
+            continue
+
+    log(f"Claude startup timeout after {timeout}s")
+    return False
+
 
 CLAUDE_LOCAL_TEMPLATE = """# Task: {task_name}
 
@@ -733,10 +779,15 @@ def send_to_worker(topic_id: int, text: str) -> bool:
                           escape_markdown_v2(f"❌ Failed to recreate {task_name}"))
         return False
 
-    # Notify recovery complete
-    if bot_token and config.group_id:
-        send_to_topic(bot_token, str(config.group_id), topic_id,
-                      escape_markdown_v2(f"✅ Session recreated"))
+    # Wait for Claude to be ready before sending message
+    if path and wait_for_claude_ready(path):
+        if bot_token and config.group_id:
+            send_to_topic(bot_token, str(config.group_id), topic_id,
+                          escape_markdown_v2(f"✅ Session recreated, forwarding message"))
+    else:
+        if bot_token and config.group_id:
+            send_to_topic(bot_token, str(config.group_id), topic_id,
+                          escape_markdown_v2(f"⚠️ Session recreated (Claude may not be ready)"))
 
     return send_to_tmux_pane(pane, text)
 

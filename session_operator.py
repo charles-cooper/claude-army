@@ -7,6 +7,7 @@ from pathlib import Path
 
 from telegram_utils import log, send_to_tmux_pane
 from registry import get_config
+from session_worker import wait_for_claude_ready
 
 # Short prefix to avoid collisions with user sessions
 SESSION_PREFIX = "ca-"  # claude-army
@@ -122,14 +123,20 @@ def send_to_operator(text: str) -> bool:
         log("Operator not configured")
         return False
 
-    # Try to get existing pane, or resurrect
+    # Track if resurrection is needed
     pane = config.operator_pane
-    if not pane or not session_exists():
+    needed_resurrection = not pane or not session_exists()
+
+    if needed_resurrection:
         pane = check_and_resurrect_operator()
 
     if not pane:
         log("Failed to get operator pane")
         return False
+
+    # If we resurrected, wait for Claude to be ready
+    if needed_resurrection:
+        wait_for_claude_ready(str(OPERATOR_DIR))
 
     log(f"send_to_operator: pane={pane}, text_len={len(text)}")
 
