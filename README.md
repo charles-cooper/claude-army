@@ -140,7 +140,7 @@ You'll be notified when:
 | Command | Handler | Description |
 |---------|---------|-------------|
 | `/setup` | Daemon | Initialize a Telegram group as the control center |
-| `/status` | Daemon | Show all active tasks and their status |
+| `/status` | Daemon | Quick list of tasks (instant, from registry) |
 | `/spawn <description>` | Operator | Create a new task |
 | `/cleanup [task]` | Operator | Clean up a task (kill session, remove worktree if applicable) |
 | `/show-tmux-command` | Daemon | Show tmux attach command for the current topic's session |
@@ -148,7 +148,7 @@ You'll be notified when:
 | `/todo <item>` | Daemon | Add todo to TODO.local.md in task directory |
 | `/debug` | Daemon | Debug a message (reply to the message first) |
 | `/rebuild-registry` | Daemon | Rebuild task registry from marker files (maintenance) |
-| `/summarize` | Operator | Summarize status of all tasks |
+| `/summarize` | Operator | Analyze tasks with TODOs, prioritize, suggest next steps |
 | `/operator [msg]` | Operator | Request operator intervention for current task |
 | `/help` | Daemon | Show available commands |
 
