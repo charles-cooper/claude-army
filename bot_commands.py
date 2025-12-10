@@ -664,15 +664,15 @@ class CommandHandler:
 
         help_text = """*Claude Army Commands*
 
-/setup - Initialize this group as control center
-/status - Show all tasks and status
-/spawn <desc> - Create a new task
-/cleanup - Clean up current task
-/show-tmux-command - Show tmux attach command
 /dump - Dump tmux pane output
+/debug - Show debug info for a message (reply to it)
+/show-tmux-command - Show tmux attach command
+/spawn <desc> - Create a new task
+/status - Show all tasks and status
+/cleanup - Clean up current task
 /help - Show this help message
 /todo <item> - Add todo to Operator queue
-/debug - Show debug info for a message (reply to it)
+/setup - Initialize this group as control center
 /summarize - Have operator summarize all tasks
 /operator [msg] - Request operator intervention for task
 /rebuild-registry - Rebuild registry from markers (maintenance)

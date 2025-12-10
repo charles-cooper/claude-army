@@ -4,6 +4,8 @@ Manage an army of Claude instances.
 
 Get Telegram notifications when Claude Code needs your attention, and respond directly from Telegram.
 
+This is supposed to augment a tmux / git worktree based workflow (not replace it). It is expected that you may occasionally want to drop into a tmux session to debug or check on things!
+
 ## Features
 
 - **Permission prompts**: Notified when Claude asks to run Bash commands, edit files, etc.
@@ -139,18 +141,18 @@ You'll be notified when:
 
 | Command | Handler | Description |
 |---------|---------|-------------|
-| `/setup` | Daemon | Initialize a Telegram group as the control center |
-| `/status` | Daemon | Quick list of tasks (instant, from registry) |
-| `/spawn <description>` | Operator | Create a new task |
-| `/cleanup [task]` | Operator | Clean up a task (kill session, remove worktree if applicable) |
-| `/show-tmux-command` | Daemon | Show tmux attach command for the current topic's session |
 | `/dump` | Daemon | Dump recent tmux pane output for the current topic |
-| `/todo <item>` | Daemon | Add todo to TODO.local.md in task directory |
 | `/debug` | Daemon | Debug a message (reply to the message first) |
-| `/rebuild-registry` | Daemon | Rebuild task registry from marker files (maintenance) |
+| `/show-tmux-command` | Daemon | Show tmux attach command for the current topic's session |
+| `/spawn <description>` | Operator | Create a new task |
+| `/status` | Daemon | Quick list of tasks (instant, from registry) |
+| `/cleanup [task]` | Operator | Clean up a task (kill session, remove worktree if applicable) |
+| `/help` | Daemon | Show available commands |
+| `/todo <item>` | Daemon | Add todo to TODO.local.md in task directory |
+| `/setup` | Daemon | Initialize a Telegram group as the control center |
 | `/summarize` | Operator | Analyze tasks with TODOs, prioritize, suggest next steps |
 | `/operator [msg]` | Operator | Request operator intervention for current task |
-| `/help` | Daemon | Show available commands |
+| `/rebuild-registry` | Daemon | Rebuild task registry from marker files (maintenance) |
 
 **Handler types:**
 - **Daemon**: Handled programmatically by the telegram daemon

@@ -273,15 +273,15 @@ def send_chat_action(bot_token: str, chat_id: str, action: str = "typing", topic
 def register_bot_commands(bot_token: str):
     """Register bot commands with Telegram. Raises on failure."""
     commands = [
-        {"command": "setup", "description": "Initialize this group as control center"},
-        {"command": "status", "description": "Show all tasks and status"},
-        {"command": "spawn", "description": "Create a new task"},
-        {"command": "cleanup", "description": "Clean up a task"},
-        {"command": "show_tmux_command", "description": "Show tmux attach command"},
         {"command": "dump", "description": "Dump tmux pane output"},
+        {"command": "debug", "description": "Show debug info for a message (reply to it)"},
+        {"command": "show_tmux_command", "description": "Show tmux attach command"},
+        {"command": "spawn", "description": "Create a new task"},
+        {"command": "status", "description": "Show all tasks and status"},
+        {"command": "cleanup", "description": "Clean up a task"},
         {"command": "help", "description": "Show available commands"},
         {"command": "todo", "description": "Add todo to Operator queue"},
-        {"command": "debug", "description": "Show debug info for a message (reply to it)"},
+        {"command": "setup", "description": "Initialize this group as control center"},
         {"command": "summarize", "description": "Have operator summarize all tasks"},
         {"command": "operator", "description": "Request operator intervention for task"},
         {"command": "rebuild_registry", "description": "Rebuild registry from markers (maintenance)"},
