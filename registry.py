@@ -215,6 +215,29 @@ class Registry(ReloadableJSON):
         """Get all tasks as list of (name, task_data)."""
         return list(self._data["tasks"].items())
 
+    def update_task_session_tracking(self, name: str, session_id: str | None = None,
+                                     pid: int | None = None, status: str | None = None):
+        """Update session tracking fields for a task.
+
+        Args:
+            name: Task name
+            session_id: Claude session ID for --resume
+            pid: Process ID (if running)
+            status: Task status ("active", "paused", "stopped")
+        """
+        task_data = self._data["tasks"].get(name)
+        if not task_data:
+            return
+
+        if session_id is not None:
+            task_data["session_id"] = session_id
+        if pid is not None:
+            task_data["pid"] = pid
+        if status is not None:
+            task_data["status"] = status
+
+        self._flush()
+
     def find_task_by_topic(self, topic_id: int) -> tuple[str, dict] | None:
         """Find task by topic ID."""
         for name, task_data in self._data["tasks"].items():
