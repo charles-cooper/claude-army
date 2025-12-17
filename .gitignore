@@ -1,4 +1,12 @@
 __pycache__/
 *.pyc
-PLAN.md
 operator/
+
+*.egg-info/
+*.log
+*.local.md
+
+.agent-files/
+.claude/
+
+scratch/
