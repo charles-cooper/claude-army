@@ -9,12 +9,10 @@ Threading model:
 - Telegram polling: uses asyncio.to_thread() for blocking HTTP calls
 - Claude subprocesses: managed via asyncio.create_subprocess_exec()
 
-Shutdown sequence:
-1. Signal received (SIGINT/SIGTERM)
-2. telegram.stop() signals poller to exit
-3. process_manager.stop_all() terminates Claude subprocesses
-4. _shutdown_event signals run() to cancel tasks
-5. Tasks cancelled and gathered
+Shutdown:
+- Signal received (SIGINT/SIGTERM) -> immediate os._exit(0)
+- No graceful cleanup needed - OS handles subprocess/thread cleanup
+- PID file cleaned up via atexit
 """
 
 import asyncio
@@ -92,9 +90,7 @@ class Daemon:
         self.telegram = TelegramAdapter(bot_token, chat_id)
         self.command_handler = CommandHandler(bot_token, chat_id, {}, self.process_manager)
 
-        # Task group for concurrent tasks
         self._running = False
-        self._shutdown_event = asyncio.Event()
 
     async def start(self) -> None:
         """Start the daemon and all components."""
@@ -113,10 +109,10 @@ class Daemon:
         # Spawn operator process on startup
         await self._spawn_operator()
 
-        # Setup signal handlers for graceful shutdown
+        # Setup signal handlers - just exit immediately
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(self.shutdown()))
+            loop.add_signal_handler(sig, self.shutdown)
 
         log("Daemon started successfully")
 
@@ -184,23 +180,12 @@ class Daemon:
             log(f"Failed to spawn operator: {e}")
 
     async def run(self) -> None:
-        """Main event loop - runs until shutdown."""
-        # Launch concurrent tasks
-        tasks = [
-            asyncio.create_task(self._handle_claude_events()),
-            asyncio.create_task(self._handle_telegram_messages()),
-            asyncio.create_task(self._handle_permission_requests()),
-        ]
-
-        # Wait for shutdown signal
-        await self._shutdown_event.wait()
-
-        # Cancel all tasks
-        for task in tasks:
-            task.cancel()
-
-        # Wait for tasks to finish cancelling
-        await asyncio.gather(*tasks, return_exceptions=True)
+        """Main event loop - runs until signal handler calls os._exit()."""
+        await asyncio.gather(
+            self._handle_claude_events(),
+            self._handle_telegram_messages(),
+            self._handle_permission_requests(),
+        )
 
     async def _handle_claude_events(self) -> None:
         """Handle events from all Claude processes."""
@@ -361,32 +346,11 @@ class Daemon:
                 return task_name
         return None
 
-    async def shutdown(self, timeout: float = 0.5) -> None:
-        """Graceful shutdown with timeout.
-
-        Args:
-            timeout: Max seconds to wait for processes to stop (default 0.5s).
-                     After timeout, OS will clean up remaining processes on exit.
-        """
-        if not self._running:
-            return
-
+    def shutdown(self) -> None:
+        """Immediate shutdown. No graceful cleanup needed - OS handles it."""
         print("\nShutting down...", flush=True)
-        self._running = False
-
-        # Signal Telegram poller to stop (allows current poll to complete)
-        self.telegram.stop()
-
-        # Stop Claude subprocesses with short timeout
-        try:
-            await asyncio.wait_for(self.process_manager.stop_all(), timeout=timeout)
-        except asyncio.TimeoutError:
-            log(f"Cleanup timed out after {timeout}s, forcing exit")
-
-        # Signal main loop to exit
-        self._shutdown_event.set()
-
-        log("Daemon shutdown complete")
+        cleanup_pid_file()
+        os._exit(0)
 
 
 async def main(config_file: Path = DEFAULT_CONFIG_FILE, pid_file: Path = DEFAULT_PID_FILE) -> int:
@@ -420,19 +384,17 @@ async def main(config_file: Path = DEFAULT_CONFIG_FILE, pid_file: Path = DEFAULT
         return 1
 
     # Create and run daemon
+    # Normal exit: signal handler calls os._exit(0)
+    # Error exit: exception propagates, we log and return 1
     daemon = Daemon(bot_token, chat_id)
 
     try:
         await daemon.start()
         await daemon.run()
-    except KeyboardInterrupt:
-        await daemon.shutdown()
+        # run() never returns normally - signal handler exits
     except Exception as e:
         log(f"Fatal error: {e}")
         import traceback
         traceback.print_exc()
-        return 1
-    finally:
         cleanup_pid_file(pid_file)
-
-    return 0
+        return 1
