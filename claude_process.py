@@ -292,6 +292,13 @@ class ClaudeProcess:
                 break
             yield event
 
+    async def stop(self, timeout: float = 5.0) -> bool:
+        """Stop the Claude subprocess gracefully.
+
+        Alias for terminate() for interface compatibility.
+        """
+        return await self.terminate(timeout)
+
     async def terminate(self, timeout: float = 5.0) -> bool:
         """Terminate the Claude subprocess.
 

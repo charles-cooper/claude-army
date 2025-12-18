@@ -1,9 +1,8 @@
-"""Tests for miscellaneous modules - FrontendAdapter, daemon helpers, full flow integration."""
+"""Integration tests - full flow tests spanning multiple modules."""
 
 import asyncio
 import queue
 import threading
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -25,42 +24,6 @@ from conftest import (
     ASSISTANT_BASH_TOOL_MESSAGE,
     SESSION_RESULT_SUCCESS,
 )
-
-
-class TestFrontendAdapter:
-    """Test FrontendAdapter abstract class and IncomingMessage."""
-
-    def test_incoming_message_dataclass(self):
-        """Test IncomingMessage dataclass."""
-        from frontend_adapter import IncomingMessage
-
-        msg = IncomingMessage(
-            task_id="test",
-            text="Hello",
-            callback_data=None,
-            msg_id="123",
-            reply_to_msg_id="100"
-        )
-
-        assert msg.task_id == "test"
-        assert msg.text == "Hello"
-        assert msg.callback_data is None
-        assert msg.msg_id == "123"
-        assert msg.reply_to_msg_id == "100"
-
-
-class TestDaemonHelpers:
-    """Test daemon helper functions."""
-
-    def test_cleanup_pid_file(self, temp_dir):
-        """Test cleanup_pid_file removes PID file."""
-        pid_file = Path(temp_dir) / "test.pid"
-        pid_file.write_text("12345")
-
-        with patch("daemon.PID_FILE", pid_file):
-            from telegram_daemon import cleanup_pid_file
-            cleanup_pid_file()
-            assert not pid_file.exists()
 
 
 @pytest.mark.asyncio
