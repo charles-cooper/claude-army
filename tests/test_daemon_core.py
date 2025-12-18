@@ -1,7 +1,10 @@
 """Tests for daemon_core.py - singleton management and PID file handling."""
 
+import atexit
 import os
+import signal
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -9,6 +12,7 @@ from daemon_core import (
     DaemonAlreadyRunning,
     check_singleton,
     cleanup_pid_file,
+    _setup_process_group,
 )
 
 
@@ -113,3 +117,80 @@ class TestDaemonAlreadyRunning:
         exc = DaemonAlreadyRunning("Daemon already running with PID 12345")
         assert "12345" in str(exc)
         assert "Daemon already running" in str(exc)
+
+
+class TestSetupProcessGroup:
+    """Test _setup_process_group function."""
+
+    def test_calls_setpgrp(self):
+        """Test _setup_process_group calls os.setpgrp."""
+        with patch('daemon_core.os.setpgrp') as mock_setpgrp, \
+             patch('daemon_core.atexit.register') as mock_register:
+            _setup_process_group()
+            mock_setpgrp.assert_called_once()
+            mock_register.assert_called_once()
+
+    def test_registers_cleanup_handler(self):
+        """Test _setup_process_group registers atexit handler."""
+        registered_funcs = []
+
+        def capture_register(func):
+            registered_funcs.append(func)
+
+        with patch('daemon_core.os.setpgrp'), \
+             patch('daemon_core.atexit.register', side_effect=capture_register):
+            _setup_process_group()
+
+        assert len(registered_funcs) == 1
+        cleanup_func = registered_funcs[0]
+
+        # Test cleanup function calls killpg
+        with patch('daemon_core.os.killpg') as mock_killpg, \
+             patch('daemon_core.os.getpgid', return_value=12345):
+            cleanup_func()
+            mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
+
+    def test_handles_setpgrp_oserror(self):
+        """Test _setup_process_group handles OSError from setpgrp."""
+        with patch('daemon_core.os.setpgrp', side_effect=OSError("Already group leader")), \
+             patch('daemon_core.atexit.register'):
+            # Should not raise
+            _setup_process_group()
+
+    def test_cleanup_handles_killpg_oserror(self):
+        """Test cleanup handler handles OSError from killpg."""
+        registered_funcs = []
+
+        def capture_register(func):
+            registered_funcs.append(func)
+
+        with patch('daemon_core.os.setpgrp'), \
+             patch('daemon_core.atexit.register', side_effect=capture_register):
+            _setup_process_group()
+
+        cleanup_func = registered_funcs[0]
+
+        # Test cleanup function handles OSError
+        with patch('daemon_core.os.killpg', side_effect=OSError("No such process")), \
+             patch('daemon_core.os.getpgid', return_value=12345):
+            # Should not raise
+            cleanup_func()
+
+    def test_cleanup_handles_process_lookup_error(self):
+        """Test cleanup handler handles ProcessLookupError from killpg."""
+        registered_funcs = []
+
+        def capture_register(func):
+            registered_funcs.append(func)
+
+        with patch('daemon_core.os.setpgrp'), \
+             patch('daemon_core.atexit.register', side_effect=capture_register):
+            _setup_process_group()
+
+        cleanup_func = registered_funcs[0]
+
+        # Test cleanup function handles ProcessLookupError
+        with patch('daemon_core.os.killpg', side_effect=ProcessLookupError("No such process")), \
+             patch('daemon_core.os.getpgid', return_value=12345):
+            # Should not raise
+            cleanup_func()

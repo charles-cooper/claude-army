@@ -184,21 +184,92 @@ class ProcessManager:
         log(f"Resumed process: {task_name} (session={session_id})")
         return process
 
-    async def send_to_process(self, task_name: str, message: str) -> None:
-        """Send a message to a specific process.
+    async def send_to_process(
+        self,
+        task_name: str,
+        message: str,
+        cwd: str | None = None,
+        allowed_tools: list[str] | None = None,
+    ) -> bool:
+        """Send a message to a specific process, resurrecting if needed.
+
+        If process exists and is running, sends message directly.
+        If process doesn't exist or isn't running, attempts resurrection via resume.
 
         Args:
             task_name: Target task identifier
             message: Message to send
+            cwd: Working directory (required for resurrection)
+            allowed_tools: Optional list of allowed tools (for resurrection)
+
+        Returns:
+            True if message sent successfully, False otherwise
 
         Raises:
-            KeyError: If task_name doesn't exist
+            KeyError: If task_name doesn't exist and no cwd provided for resurrection
         """
-        if task_name not in self.processes:
-            raise KeyError(f"Process not found: {task_name}")
+        process = self.processes.get(task_name)
 
-        process = self.processes[task_name]
-        await process.send_message(message)
+        # Check if process exists and is running
+        if process is not None and process.is_running:
+            return await process.send_message(message)
+
+        # Process dead or missing - try resurrection
+        if process is not None:
+            # Clean up dead process
+            log(f"Process {task_name} not running, resurrecting...")
+            if task_name in self._event_tasks:
+                self._event_tasks[task_name].cancel()
+                try:
+                    await self._event_tasks[task_name]
+                except asyncio.CancelledError:
+                    pass
+                del self._event_tasks[task_name]
+            del self.processes[task_name]
+
+        # Get session_id from registry for resume
+        registry = get_registry()
+        task_data = registry.get_task(task_name)
+
+        if not task_data:
+            raise KeyError(f"Process not found and no registry entry: {task_name}")
+
+        session_id = task_data.get("session_id")
+        task_cwd = cwd or task_data.get("path")
+
+        if not task_cwd:
+            raise KeyError(f"Cannot resurrect {task_name}: no cwd available")
+
+        # Import here to avoid circular dependency
+        from claude_process import ClaudeProcess as ClaudeProcessImpl
+
+        # Create process with resume flag if we have a session
+        process = ClaudeProcessImpl(
+            cwd=task_cwd,
+            resume_session_id=session_id,
+            allowed_tools=allowed_tools
+        )
+
+        # Start subprocess
+        started = await process.start()
+        if not started:
+            log(f"Failed to resurrect process: {task_name}")
+            return False
+
+        # Update registry with new pid
+        task_data["pid"] = process.pid
+        if process.session_id:
+            task_data["session_id"] = process.session_id
+        registry.add_task(task_name, task_data)
+
+        # Store process and start event monitoring
+        self.processes[task_name] = process
+        self._start_event_task(task_name, process)
+
+        log(f"Resurrected process: {task_name} (session={process.session_id})")
+
+        # Send the message
+        return await process.send_message(message)
 
     async def stop_process(self, task_name: str) -> None:
         """Stop a specific process.

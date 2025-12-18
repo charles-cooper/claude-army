@@ -49,12 +49,23 @@ class TestProcessManager:
 class TestProcessManagerAdvanced:
     """Additional ProcessManager tests."""
 
-    async def test_send_to_process_not_found(self):
-        """Test send_to_process raises KeyError for unknown task."""
-        manager = ProcessManager()
-        with pytest.raises(KeyError) as exc_info:
-            await manager.send_to_process("unknown_task", "Hello")
-        assert "unknown_task" in str(exc_info.value)
+    async def test_send_to_process_not_found(self, temp_dir):
+        """Test send_to_process raises KeyError for unknown task with no registry."""
+        from registry import reset_singletons
+        reset_singletons()
+
+        registry_path = Path(temp_dir) / "registry.json"
+        with patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("process_manager.get_registry") as mock_get_registry:
+            mock_registry = MagicMock()
+            mock_registry.get_task.return_value = None
+            mock_get_registry.return_value = mock_registry
+
+            manager = ProcessManager()
+            with pytest.raises(KeyError) as exc_info:
+                await manager.send_to_process("unknown_task", "Hello")
+            assert "unknown_task" in str(exc_info.value)
 
     async def test_stop_process_not_found(self):
         """Test stop_process raises KeyError for unknown task."""
@@ -96,12 +107,62 @@ class TestProcessManagerAdvanced:
         manager = ProcessManager()
 
         mock_process = AsyncMock()
-        mock_process.send_message = AsyncMock()
+        mock_process.send_message = AsyncMock(return_value=True)
+        mock_process.is_running = True
         manager.processes["task1"] = mock_process
 
-        await manager.send_to_process("task1", "Hello Claude")
+        result = await manager.send_to_process("task1", "Hello Claude")
 
+        assert result is True
         mock_process.send_message.assert_called_once_with("Hello Claude")
+
+    async def test_send_to_process_resurrects_dead_process(self, temp_dir):
+        """Test send_to_process resurrects a dead process from registry."""
+        from registry import reset_singletons
+        reset_singletons()
+
+        registry_path = Path(temp_dir) / "registry.json"
+        with patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("process_manager.get_registry") as mock_get_registry:
+
+            mock_registry = MagicMock()
+            mock_registry.get_task.return_value = {
+                "type": "session",
+                "path": temp_dir,
+                "session_id": "old-session-123"
+            }
+            mock_get_registry.return_value = mock_registry
+
+            # Create mock for new process
+            mock_new_process = AsyncMock()
+            mock_new_process.start = AsyncMock(return_value=True)
+            mock_new_process.session_id = "old-session-123"
+            mock_new_process.pid = 9999
+            mock_new_process.is_running = True
+            mock_new_process.send_message = AsyncMock(return_value=True)
+
+            async def mock_events():
+                if False:
+                    yield
+
+            mock_new_process.events = mock_events
+
+            with patch("claude_process.ClaudeProcess", return_value=mock_new_process):
+                manager = ProcessManager()
+
+                # Add a dead process
+                dead_process = MagicMock()
+                dead_process.is_running = False
+                manager.processes["dead_task"] = dead_process
+
+                result = await manager.send_to_process("dead_task", "Resurrect me")
+
+                assert result is True
+                mock_new_process.start.assert_called_once()
+                mock_new_process.send_message.assert_called_once_with("Resurrect me")
+                assert "dead_task" in manager.processes
+                assert manager.processes["dead_task"] == mock_new_process
 
     async def test_spawn_process_success(self, temp_dir):
         """Test spawn_process creates and tracks a new process."""

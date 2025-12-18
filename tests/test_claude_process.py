@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -16,6 +17,7 @@ from claude_process import (
     extract_text,
     extract_tool_uses,
     has_thinking,
+    _set_pdeathsig,
 )
 
 from conftest import (
@@ -735,3 +737,40 @@ class TestClaudeProcessErrorPaths:
 
             result = await process.terminate(timeout=0.5)
             assert result is False
+
+
+class TestPdeathsig:
+    """Test _set_pdeathsig helper function."""
+
+    def test_pdeathsig_non_linux(self):
+        """Test _set_pdeathsig does nothing on non-Linux."""
+        with patch.object(sys, 'platform', 'darwin'):
+            # Should not raise, just return silently
+            _set_pdeathsig()
+
+    def test_pdeathsig_linux_success(self):
+        """Test _set_pdeathsig calls prctl on Linux."""
+        with patch.object(sys, 'platform', 'linux'):
+            mock_libc = MagicMock()
+            mock_libc.prctl = MagicMock(return_value=0)
+
+            with patch('ctypes.CDLL', return_value=mock_libc):
+                _set_pdeathsig()
+                mock_libc.prctl.assert_called_once_with(1, 15, 0, 0, 0)  # PR_SET_PDEATHSIG=1, SIGTERM=15
+
+    def test_pdeathsig_linux_oserror(self):
+        """Test _set_pdeathsig handles OSError gracefully."""
+        with patch.object(sys, 'platform', 'linux'):
+            with patch('ctypes.CDLL', side_effect=OSError("No such file")):
+                # Should not raise
+                _set_pdeathsig()
+
+    def test_pdeathsig_linux_attribute_error(self):
+        """Test _set_pdeathsig handles AttributeError gracefully."""
+        with patch.object(sys, 'platform', 'linux'):
+            mock_libc = MagicMock()
+            del mock_libc.prctl  # Make prctl access raise AttributeError
+
+            with patch('ctypes.CDLL', return_value=mock_libc):
+                # Should not raise
+                _set_pdeathsig()

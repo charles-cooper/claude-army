@@ -11,7 +11,7 @@ Threading model:
 
 Shutdown:
 - Signal received (SIGINT/SIGTERM) -> immediate os._exit(0)
-- No graceful cleanup needed - OS handles subprocess/thread cleanup
+- Process group cleanup via atexit ensures child processes are terminated
 - PID file cleaned up via atexit
 """
 
@@ -23,6 +23,26 @@ import signal
 import sys
 import threading
 from pathlib import Path
+
+
+def _setup_process_group():
+    """Setup process group and atexit cleanup for orphan handling.
+
+    Creates a new process group so all children can be killed together.
+    Registers atexit handler to terminate process group on exit.
+    """
+    try:
+        os.setpgrp()
+    except OSError:
+        pass  # May fail if already group leader
+
+    def cleanup_process_group():
+        try:
+            os.killpg(os.getpgid(0), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+
+    atexit.register(cleanup_process_group)
 
 from telegram_utils import log, escape_markdown_v2
 from registry import get_config, get_registry
@@ -288,11 +308,10 @@ class Daemon:
             log(f"Assistant requested {len(tools)} tools: {[t.name for t in tools]}")
 
     async def _on_session_result(self, task_name: str, event: SessionResult) -> None:
-        """Handle session result event."""
-        status = "completed" if event.success else "failed"
-        msg = f"Session {status} (cost: ${event.cost:.4f}, turns: {event.turns})"
-        await self.telegram.send_message(task_name, msg)
-        log(f"Session result: {task_name} - {status}")
+        """Handle session result event - marks end of a turn, not end of session."""
+        # Just log, don't send to Telegram (noisy for multi-turn)
+        status = "ok" if event.success else "error"
+        log(f"Turn complete: {task_name} ({status}, ${event.cost:.4f})")
 
     async def _on_process_error(self, task_name: str, event: dict) -> None:
         """Handle process error event."""
@@ -318,12 +337,25 @@ class Daemon:
                 await self.telegram.update_message(msg.task_id, msg.msg_id, buttons=label)
 
     async def _route_message_to_claude(self, task_name: str, text: str) -> None:
-        """Route a message to the appropriate Claude process."""
-        # Map task_name to actual process (operator or specific task)
-        if task_name == "operator" or not self.process_manager.get_process(task_name):
+        """Route a message to the appropriate Claude process.
+
+        Uses existing process if running, otherwise resurrects from registry.
+        Falls back to operator for unknown tasks.
+        """
+        # Try to send to the specific task first
+        try:
+            if task_name != "operator" and self.process_manager.get_process(task_name):
+                success = await self.process_manager.send_to_process(task_name, text)
+                if success:
+                    return
+        except KeyError:
+            pass
+
+        # Fall back to operator
+        try:
             await self.process_manager.send_to_process("operator", text)
-        else:
-            await self.process_manager.send_to_process(task_name, text)
+        except KeyError:
+            log(f"No operator process available for message: {text[:100]}")
 
     def _get_topic_id_for_task(self, task_name: str) -> int | None:
         """Get Telegram topic_id for a task."""
@@ -363,6 +395,9 @@ async def main(config_file: Path = DEFAULT_CONFIG_FILE, pid_file: Path = DEFAULT
     Returns:
         Exit code (0 for success, 1 for error).
     """
+    # Setup process group for orphan handling
+    _setup_process_group()
+
     try:
         check_singleton(pid_file)
     except DaemonAlreadyRunning as e:

@@ -3,11 +3,29 @@
 import asyncio
 import json
 import os
+import signal
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
 from telegram_utils import log
+
+
+def _set_pdeathsig():
+    """Set PR_SET_PDEATHSIG to SIGTERM so child dies when parent exits.
+
+    Linux-only. Best-effort - fails silently on non-Linux or permission errors.
+    """
+    if sys.platform != 'linux':
+        return
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass
 
 
 @dataclass
@@ -98,11 +116,11 @@ class ClaudeProcess:
             return False
 
         # Build command
-        # Note: --output-format stream-json implies print mode internally
+        # -p enables print mode (required for multi-turn stream-json)
         # --verbose is required for stream-json output
-        # Without explicit -p, session should stay alive for multi-turn
         cmd = [
             "claude",
+            "-p",
             "--verbose",
             "--output-format", "stream-json",
             "--input-format", "stream-json",
@@ -128,6 +146,7 @@ class ClaudeProcess:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.cwd,
+                preexec_fn=_set_pdeathsig,
             )
             self._running = True
 
