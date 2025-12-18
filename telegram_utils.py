@@ -8,8 +8,31 @@ import requests
 import shlex
 import subprocess
 import threading
-import time
 from pathlib import Path
+
+
+def pane_exists(pane: str) -> bool:
+    """Check if a tmux pane exists."""
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", pane.split(":")[0]],
+        capture_output=True
+    )
+    return result.returncode == 0
+
+
+def send_to_tmux_pane(pane: str, text: str) -> bool:
+    """Send text to a tmux pane. Returns True on success."""
+    try:
+        # Send Escape first to cancel any pending prompt
+        subprocess.run(["tmux", "send-keys", "-t", pane, "Escape"], check=True)
+        import time
+        time.sleep(0.1)
+        # Send the text
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text], check=True)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+        return True
+    except subprocess.CalledProcessError:
+        return False
 
 
 def shell_quote(s: str) -> str:
@@ -161,32 +184,6 @@ def format_tool_permission(tool_name: str, tool_input: dict, markdown_v2: bool =
     else:
         input_str = json.dumps(tool_input, indent=2).replace("```", "'''")
         return f"{esc('Claude is asking permission to use')} {esc(tool_name)}{esc(':')}\n\n```\n{input_str}\n```"
-
-
-def pane_exists(pane: str) -> bool:
-    """Check if a tmux pane exists."""
-    result = subprocess.run(
-        ["tmux", "has-session", "-t", pane],
-        capture_output=True
-    )
-    return result.returncode == 0
-
-
-def send_to_tmux_pane(pane: str, text: str) -> bool:
-    """Send text to a tmux pane. Clears line first, sends text, then Enter.
-
-    Returns True on success, False on failure (e.g., pane dead).
-    """
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", pane, "C-u"], check=True)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text], check=True)
-        # Longer text needs more time for TUI to process before Enter
-        delay = 0.1 + len(text) / 10000  # ~0.1s base + 0.1s per 1000 chars
-        time.sleep(delay)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-        return True
-    except subprocess.CalledProcessError:
-        return False
 
 
 def send_telegram(bot_token: str, chat_id: str, msg: str, tool_name: str = None, reply_markup: dict = None, parse_mode: str = "Markdown") -> dict | None:

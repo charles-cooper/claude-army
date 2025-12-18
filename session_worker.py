@@ -15,8 +15,8 @@ from pathlib import Path
 
 from telegram_utils import (
     log, edit_forum_topic, create_forum_topic, close_forum_topic, delete_forum_topic,
-    shell_quote, TopicCreationError, send_to_tmux_pane, send_to_topic,
-    escape_markdown_v2, pane_exists
+    shell_quote, TopicCreationError, send_to_topic, escape_markdown_v2,
+    send_to_tmux_pane, pane_exists
 )
 from registry import (
     get_config, get_registry, write_marker_file, read_marker_file,
