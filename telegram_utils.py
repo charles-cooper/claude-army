@@ -6,33 +6,8 @@ import json
 import os
 import requests
 import shlex
-import subprocess
 import threading
 from pathlib import Path
-
-
-def pane_exists(pane: str) -> bool:
-    """Check if a tmux pane exists."""
-    result = subprocess.run(
-        ["tmux", "has-session", "-t", pane.split(":")[0]],
-        capture_output=True
-    )
-    return result.returncode == 0
-
-
-def send_to_tmux_pane(pane: str, text: str) -> bool:
-    """Send text to a tmux pane. Returns True on success."""
-    try:
-        # Send Escape first to cancel any pending prompt
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Escape"], check=True)
-        import time
-        time.sleep(0.1)
-        # Send the text
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text], check=True)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-        return True
-    except subprocess.CalledProcessError:
-        return False
 
 
 def shell_quote(s: str) -> str:
