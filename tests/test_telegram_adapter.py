@@ -223,8 +223,8 @@ class TestTelegramAdapterAdvanced:
             topic_id = adapter._get_topic_id("123")
             assert topic_id == 123
 
-    async def test_get_task_id_from_topic_fallback(self, mock_telegram_server):
-        """Test _get_task_id_from_topic fallback to string."""
+    async def test_get_task_id_from_topic_unknown_routes_to_operator(self, mock_telegram_server):
+        """Test _get_task_id_from_topic routes unknown topics to operator."""
         with patch("telegram_adapter.get_registry") as mock_registry, \
              patch("telegram_adapter.get_config") as mock_config:
 
@@ -240,7 +240,8 @@ class TestTelegramAdapterAdvanced:
 
             adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
             task_id = adapter._get_task_id_from_topic(999)
-            assert task_id == "999"
+            # Unknown topics now route to operator instead of using string topic_id
+            assert task_id == "operator"
 
     async def test_delete_message(self, mock_telegram_server):
         """Test delete_message."""

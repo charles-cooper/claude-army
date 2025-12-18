@@ -127,8 +127,9 @@ class TelegramAdapter(FrontendAdapter):
             task_name, _ = result
             return task_name
 
-        # Fallback: use topic_id as string
-        return str(topic_id)
+        # Unknown topic - route to operator with warning
+        log(f"Unknown topic_id {topic_id}, routing to operator")
+        return "operator"
 
     async def send_message(
         self,

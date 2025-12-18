@@ -267,6 +267,7 @@ class Daemon:
         """Handle messages from Telegram."""
         try:
             async for msg in self.telegram.incoming_messages():
+                log(f"Received: task_id={msg.task_id}, text={msg.text[:50] if msg.text else '(callback)'}")
                 try:
                     # Handle callback queries (button clicks)
                     if msg.callback_data:
@@ -379,17 +380,21 @@ class Daemon:
         Uses existing process if running, otherwise resurrects from registry.
         Falls back to operator for unknown tasks.
         """
+        log(f"Routing message to {task_name}: {text[:50]}...")
+
         # Try to send to the specific task first
         try:
             if task_name != "operator" and self.process_manager.get_process(task_name):
+                log(f"Sending to task process: {task_name}")
                 success = await self.process_manager.send_to_process(task_name, text)
                 if success:
                     return
         except KeyError:
-            pass
+            log(f"Task {task_name} not found, falling back to operator")
 
         # Fall back to operator
         try:
+            log("Sending to operator")
             await self.process_manager.send_to_process("operator", text)
         except KeyError:
             log(f"No operator process available for message: {text[:100]}")
