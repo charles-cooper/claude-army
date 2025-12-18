@@ -52,6 +52,9 @@ class TelegramAdapter(FrontendAdapter):
         config = get_config()
         self.offset = config.get("telegram_offset", 0)
 
+        # Session for connection pooling
+        self._session = requests.Session()
+
         # Shutdown flag for clean exit
         self._shutdown = False
 
@@ -61,6 +64,7 @@ class TelegramAdapter(FrontendAdapter):
         Call this before cancelling tasks to ensure clean shutdown.
         """
         self._shutdown = True
+        self._session.close()
 
     def _get_topic_id(self, task_id: str) -> int | None:
         """Get Telegram topic_id for a task_id.
@@ -202,7 +206,7 @@ class TelegramAdapter(FrontendAdapter):
                      for btn in buttons]
                 ]
             }
-            requests.post(
+            self._session.post(
                 f"https://api.telegram.org/bot{self.bot_token}/editMessageReplyMarkup",
                 json={
                     "chat_id": self.chat_id,
@@ -254,7 +258,7 @@ class TelegramAdapter(FrontendAdapter):
             try:
                 # Poll Telegram API (in thread to avoid blocking event loop)
                 resp = await asyncio.to_thread(
-                    requests.get,
+                    self._session.get,
                     f"https://api.telegram.org/bot{self.bot_token}/getUpdates",
                     params={"offset": self.offset, "timeout": self.timeout},
                     timeout=self.timeout + 2

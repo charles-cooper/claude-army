@@ -524,7 +524,12 @@ class TestTelegramAdapterAdvanced:
             mock_cfg_instance.get.return_value = 0
             mock_config.return_value = mock_cfg_instance
 
-            original_post = requests.post
+            from telegram_adapter import TelegramAdapter
+
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            # Patch the session's post method to redirect to mock server
+            original_post = adapter._session.post
 
             def patched_post(url, **kwargs):
                 if "api.telegram.org" in url:
@@ -535,10 +540,7 @@ class TestTelegramAdapterAdvanced:
                     )
                 return original_post(url, **kwargs)
 
-            with patch.object(requests, "post", patched_post):
-                from telegram_adapter import TelegramAdapter
-
-                adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+            with patch.object(adapter._session, "post", patched_post):
                 await adapter.update_message(
                     "operator",
                     "100",
@@ -619,23 +621,21 @@ class TestTelegramAdapterIncoming:
             # Add a message to mock server
             mock_telegram_server.add_message_update("Hello", topic_id=123)
 
-            original_get = requests.get
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            original_get = adapter._session.get
 
             def patched_get(url, **kwargs):
                 if "api.telegram.org" in url:
                     method = url.split("/")[-1]
-                    # Use POST for Telegram API mock
                     return requests.post(
                         f"{mock_telegram_server.base_url}/bot_TOKEN/{method}",
                         json=kwargs.get("params", {}),
                     )
                 return original_get(url, **kwargs)
 
-            with patch.object(requests, "get", patched_get):
-                from telegram_adapter import TelegramAdapter
-
-                adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
+            with patch.object(adapter._session, "get", patched_get):
                 messages = []
                 async for msg in adapter.incoming_messages():
                     messages.append(msg)
@@ -664,7 +664,10 @@ class TestTelegramAdapterIncoming:
 
             mock_telegram_server.add_callback_update("allow:toolu_123", msg_id=200, topic_id=456)
 
-            original_get = requests.get
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            original_get = adapter._session.get
 
             def patched_get(url, **kwargs):
                 if "api.telegram.org" in url:
@@ -675,11 +678,7 @@ class TestTelegramAdapterIncoming:
                     )
                 return original_get(url, **kwargs)
 
-            with patch.object(requests, "get", patched_get):
-                from telegram_adapter import TelegramAdapter
-
-                adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
+            with patch.object(adapter._session, "get", patched_get):
                 messages = []
                 async for msg in adapter.incoming_messages():
                     messages.append(msg)
@@ -720,7 +719,10 @@ class TestTelegramAdapterIncoming:
             # Add a regular message after
             mock_telegram_server.add_message_update("After topic", topic_id=123)
 
-            original_get = requests.get
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            original_get = adapter._session.get
 
             def patched_get(url, **kwargs):
                 if "api.telegram.org" in url:
@@ -731,11 +733,7 @@ class TestTelegramAdapterIncoming:
                     )
                 return original_get(url, **kwargs)
 
-            with patch.object(requests, "get", patched_get):
-                from telegram_adapter import TelegramAdapter
-
-                adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
+            with patch.object(adapter._session, "get", patched_get):
                 messages = []
                 count = 0
                 async for msg in adapter.incoming_messages():
@@ -775,7 +773,10 @@ class TestTelegramAdapterIncoming:
                 }
             })
 
-            original_get = requests.get
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            original_get = adapter._session.get
 
             def patched_get(url, **kwargs):
                 if "api.telegram.org" in url:
@@ -786,11 +787,7 @@ class TestTelegramAdapterIncoming:
                     )
                 return original_get(url, **kwargs)
 
-            with patch.object(requests, "get", patched_get):
-                from telegram_adapter import TelegramAdapter
-
-                adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
+            with patch.object(adapter._session, "get", patched_get):
                 messages = []
                 async for msg in adapter.incoming_messages():
                     messages.append(msg)
@@ -828,7 +825,10 @@ class TestTelegramAdapterIncoming:
             # Add a valid message
             mock_telegram_server.add_message_update("Valid message", topic_id=123)
 
-            original_get = requests.get
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            original_get = adapter._session.get
 
             def patched_get(url, **kwargs):
                 if "api.telegram.org" in url:
@@ -839,11 +839,7 @@ class TestTelegramAdapterIncoming:
                     )
                 return original_get(url, **kwargs)
 
-            with patch.object(requests, "get", patched_get):
-                from telegram_adapter import TelegramAdapter
-
-                adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
+            with patch.object(adapter._session, "get", patched_get):
                 messages = []
                 async for msg in adapter.incoming_messages():
                     messages.append(msg)
@@ -881,7 +877,10 @@ class TestTelegramAdapterIncoming:
             # Add a text message after
             mock_telegram_server.add_message_update("Text after sticker", topic_id=1)
 
-            original_get = requests.get
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            original_get = adapter._session.get
 
             def patched_get(url, **kwargs):
                 if "api.telegram.org" in url:
@@ -892,11 +891,7 @@ class TestTelegramAdapterIncoming:
                     )
                 return original_get(url, **kwargs)
 
-            with patch.object(requests, "get", patched_get):
-                from telegram_adapter import TelegramAdapter
-
-                adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
+            with patch.object(adapter._session, "get", patched_get):
                 messages = []
                 async for msg in adapter.incoming_messages():
                     messages.append(msg)
@@ -922,6 +917,9 @@ class TestTelegramAdapterIncoming:
             mock_cfg_instance.set = MagicMock()
             mock_config.return_value = mock_cfg_instance
 
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
             call_count = [0]
 
             def failing_get(url, **kwargs):
@@ -934,11 +932,7 @@ class TestTelegramAdapterIncoming:
                 mock_resp.json.return_value = {"ok": True, "result": []}
                 return mock_resp
 
-            with patch.object(requests, "get", failing_get):
-                from telegram_adapter import TelegramAdapter
-
-                adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
+            with patch.object(adapter._session, "get", failing_get):
                 # Run for a short time to test error handling
                 async def run_with_timeout():
                     async for msg in adapter.incoming_messages():
@@ -980,7 +974,10 @@ class TestTelegramAdapterIncoming:
                 }
             })
 
-            original_get = requests.get
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            original_get = adapter._session.get
 
             def patched_get(url, **kwargs):
                 if "api.telegram.org" in url:
@@ -991,11 +988,7 @@ class TestTelegramAdapterIncoming:
                     )
                 return original_get(url, **kwargs)
 
-            with patch.object(requests, "get", patched_get):
-                from telegram_adapter import TelegramAdapter
-
-                adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
+            with patch.object(adapter._session, "get", patched_get):
                 messages = []
                 async for msg in adapter.incoming_messages():
                     messages.append(msg)
