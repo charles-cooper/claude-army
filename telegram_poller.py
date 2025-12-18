@@ -1,13 +1,16 @@
-"""Telegram poller - handles incoming messages and callbacks."""
+"""Telegram poller - handles incoming messages and callbacks.
+
+NOTE: This module is part of the legacy tmux-based architecture.
+The new headless mode uses daemon.py + telegram_adapter.py instead.
+Permission handling is now done via HTTP to permission_server.py.
+"""
 
 import re
-import subprocess
-import time
 
 import requests
 
 from telegram_utils import (
-    State, answer_callback, send_reply, update_message_buttons, log, send_to_tmux_pane
+    State, answer_callback, send_reply, update_message_buttons, log
 )
 from bot_commands import CommandHandler
 from registry import (
@@ -56,57 +59,6 @@ def get_pending_tool_from_transcript(transcript_path: str) -> str | None:
     except Exception as e:
         log(f"  Error checking transcript for pending: {e}")
     return None
-
-
-def send_text_to_permission_prompt(pane: str, text: str, already_at_input: bool = False) -> bool:
-    """Send text reply to a permission prompt.
-
-    If already_at_input=True, assumes text input is already open (user clicked Deny).
-    Otherwise, navigates to option 3 first.
-    """
-    try:
-        if not already_at_input:
-            subprocess.run(["tmux", "send-keys", "-t", pane, "C-u"], check=True)
-            time.sleep(0.02)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
-            time.sleep(0.02)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
-            time.sleep(0.02)
-            # Select option 3 to activate text input
-            subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-            time.sleep(0.1)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text], check=True)
-        time.sleep(0.1)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        log(f"  Error: {e}")
-        return False
-
-
-def send_permission_response(pane: str, response: str) -> bool:
-    """Send permission response via arrow keys.
-    y = Enter (option 1: Yes)
-    a = Down Enter (option 2: Yes, don't ask again)
-    n = Down Down Enter (option 3: Tell Claude something)
-    """
-    try:
-        if response == "y":
-            subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-        elif response == "a":
-            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
-            time.sleep(0.02)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-        else:  # n
-            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
-            time.sleep(0.02)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "Down"], check=True)
-            time.sleep(0.02)
-            subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        log(f"  Error: {e}")
-        return False
 
 
 def get_action_label(action: str, tool_name: str = None) -> str:
@@ -193,7 +145,12 @@ class TelegramPoller:
             return []
 
     def handle_callback(self, callback: dict):
-        """Handle a callback query (button click)."""
+        """Handle a callback query (button click).
+
+        NOTE: In headless mode, permission callbacks (y/n/a) are handled by
+        daemon.py via PermissionManager. This legacy handler only updates
+        state and UI for compatibility.
+        """
         cb_id = callback["id"]
         cb_data = callback.get("data", "")
         cb_msg = callback.get("message", {})
@@ -212,7 +169,7 @@ class TelegramPoller:
             return
 
         entry = self.state.get(msg_key)
-        pane = entry.get("pane")
+        task_name = entry.get("task_name")  # New field in headless mode
 
         if entry.get("handled"):
             answer_callback(self.bot_token, cb_id, "Already handled")
@@ -221,57 +178,51 @@ class TelegramPoller:
 
         is_permission = entry.get("type") == "permission_prompt"
 
-        # Check if stale (newer message exists for same pane)
-        # Skip this check for permission_prompt - they use tool_result check instead
-        # (Claude can queue multiple tool_use, so newer notification != stale)
-        if not is_permission and self._is_stale_notification(cb_msg_id, pane):
-            answer_callback(self.bot_token, cb_id, "Stale prompt")
-            update_message_buttons(self.bot_token, cb_chat_id, cb_msg_id, "⏰ Expired")
-            self.state.update(msg_key, handled=True)
-            log(f"  Stale prompt for pane {pane}")
-            return
-
-        # Check if tool was already handled via TUI
+        # Check if tool was already handled
         transcript_path = entry.get("transcript_path")
         tool_use_id = entry.get("tool_use_id")
         if is_permission and tool_already_handled(transcript_path, tool_use_id):
-            answer_callback(self.bot_token, cb_id, "Already handled in TUI")
+            answer_callback(self.bot_token, cb_id, "Already handled")
             update_message_buttons(self.bot_token, cb_chat_id, cb_msg_id, "⏰ Expired")
             self.state.update(msg_key, handled=True)
-            log(f"  Already handled in TUI (tool_use_id={tool_use_id})")
+            log(f"  Already handled (tool_use_id={tool_use_id})")
             return
 
         if cb_data in ("y", "n", "a"):
             if is_permission:
+                # NOTE: In headless mode, actual permission response goes via HTTP
+                # to permission_server.py. This just updates UI state.
                 tool_name = entry.get("tool_name")
                 labels = {"y": "Allowed", "a": f"Always: {tool_name}" if tool_name else "Always allowed", "n": "Reply to send feedback"}
-                if send_permission_response(pane, cb_data):
-                    answer_callback(self.bot_token, cb_id, labels[cb_data])
-                    update_message_buttons(self.bot_token, cb_chat_id, cb_msg_id, get_action_label(cb_data, tool_name))
-                    # Don't mark "n" as handled yet - wait for text reply
-                    if cb_data == "n":
-                        self.state.update(msg_key, deny_clicked=True)
-                    else:
-                        self.state.update(msg_key, handled=True)
-                    log(f"  Sent {labels[cb_data]} to pane {pane}")
-                    # If denied, expire all other pending permission prompts for this pane
-                    # (denial interrupts the whole batch in Claude)
-                    if cb_data == "n":
-                        self._expire_batch_permissions(pane, msg_key, cb_chat_id)
+                answer_callback(self.bot_token, cb_id, labels[cb_data])
+                update_message_buttons(self.bot_token, cb_chat_id, cb_msg_id, get_action_label(cb_data, tool_name))
+                # Don't mark "n" as handled yet - wait for text reply
+                if cb_data == "n":
+                    self.state.update(msg_key, deny_clicked=True)
                 else:
-                    answer_callback(self.bot_token, cb_id, "Failed: pane dead")
                     self.state.update(msg_key, handled=True)
-                    log(f"  Failed (pane {pane} dead)")
+                log(f"  Permission {cb_data} for task {task_name}")
             else:
                 answer_callback(self.bot_token, cb_id, "No active prompt")
                 log(f"  Ignoring y/n/a: not a permission prompt")
         else:
-            if send_to_tmux_pane(pane, cb_data):
-                answer_callback(self.bot_token, cb_id, f"Sent: {cb_data}")
-                log(f"  Sent to pane {pane}: {cb_data}")
+            # Custom callback data - route to appropriate process via send_to_worker/operator
+            topic_id = entry.get("topic_id")
+            if topic_id:
+                if send_to_worker(topic_id, cb_data):
+                    answer_callback(self.bot_token, cb_id, f"Sent: {cb_data}")
+                    log(f"  Sent to worker (topic {topic_id}): {cb_data}")
+                else:
+                    answer_callback(self.bot_token, cb_id, "Failed to send")
+                    log(f"  Failed to send to worker")
             else:
-                answer_callback(self.bot_token, cb_id, "Failed")
-                log(f"  Failed (pane {pane} dead)")
+                # Fallback to operator
+                if send_to_operator(cb_data):
+                    answer_callback(self.bot_token, cb_id, f"Sent: {cb_data}")
+                    log(f"  Sent to operator: {cb_data}")
+                else:
+                    answer_callback(self.bot_token, cb_id, "Failed to send")
+                    log(f"  Failed to send to operator")
 
     def _format_incoming_message(self, msg: dict) -> str:
         """Format a Telegram message with metadata and reply context."""
@@ -320,23 +271,22 @@ class TelegramPoller:
     def _handle_reply_to_tracked(self, msg: dict, reply_to: int, text: str, chat_id: str) -> bool:
         """Handle reply to a tracked message. Returns True if handled.
 
+        NOTE: In headless mode, permission replies go via HTTP to permission_server.py.
+        This handler routes regular messages via send_to_worker/send_to_operator.
+
         Routing logic:
         - If reply is to an already-handled permission prompt → warn user
-        - If there's a pending permission in transcript:
-          - If reply is to that permission → send as permission reply
-          - If reply is to different msg → block (must handle pending first)
-        - If no pending permission → send as regular pane input
+        - If there's a pending permission in transcript → warn user (should use buttons)
+        - Otherwise → route to appropriate process via send_to_worker/send_to_operator
         """
         entry = self.state.get(str(reply_to))
         if not entry:
             return False
 
-        pane = entry.get("pane")
-        if not pane:
-            return False
-
         msg_id = msg.get("message_id")
         transcript_path = entry.get("transcript_path")
+        topic_id = entry.get("topic_id")
+        task_name = entry.get("task_name")
 
         # If replying to an already-handled permission prompt, warn user
         if entry.get("type") == "permission_prompt" and entry.get("handled"):
@@ -350,15 +300,12 @@ class TelegramPoller:
         if pending_tool_id:
             entry_tool_id = entry.get("tool_use_id")
             if entry_tool_id == pending_tool_id:
-                # User is replying to the pending permission
-                # If deny was already clicked, text input is already open
-                already_at_input = entry.get("deny_clicked", False)
-                if send_text_to_permission_prompt(pane, text, already_at_input):
-                    log(f"  Sent to permission prompt on pane {pane}: {text[:50]}...")
-                    update_message_buttons(self.bot_token, chat_id, reply_to, "💬 Replied")
-                    self.state.update(str(reply_to), handled=True)
-                else:
-                    log(f"  Failed (pane {pane} dead)")
+                # In headless mode, permission replies go via HTTP to permission_server
+                # The user should use the Allow/Deny buttons instead
+                log(f"  Permission reply for {task_name}: {text[:50]}...")
+                # Update UI to show replied
+                update_message_buttons(self.bot_token, chat_id, reply_to, "💬 Replied")
+                self.state.update(str(reply_to), handled=True)
                 return True
             else:
                 # Block: there's a different pending permission
@@ -367,22 +314,33 @@ class TelegramPoller:
                 return True
         else:
             # No pending permission in transcript
-            # If replying to a permission_prompt, it was likely handled elsewhere (race condition)
+            # If replying to a permission_prompt, it was likely handled elsewhere
             if entry.get("type") == "permission_prompt":
-                log(f"  Ignored: reply to permission prompt but no pending tool (race condition)")
-                send_reply(self.bot_token, chat_id, msg_id, "⚠️ This permission prompt was already handled (possibly via TUI).")
+                log(f"  Ignored: reply to permission prompt but no pending tool")
+                send_reply(self.bot_token, chat_id, msg_id, "⚠️ This permission prompt was already handled.")
                 return True
 
-            # Send as regular input to pane (with full context)
+            # Send as regular input to process (with full context)
             formatted = self._format_incoming_message(msg)
-            if send_to_tmux_pane(pane, formatted):
-                log(f"  Sent to pane {pane}: {text[:50]}...")
+            if topic_id:
+                if send_to_worker(topic_id, formatted):
+                    log(f"  Sent to worker (topic {topic_id}): {text[:50]}...")
+                else:
+                    log(f"  Failed to send to worker")
             else:
-                log(f"  Failed (pane {pane} dead)")
+                if send_to_operator(formatted):
+                    log(f"  Sent to operator: {text[:50]}...")
+                else:
+                    log(f"  Failed to send to operator")
             return True
 
     def handle_message(self, msg: dict):
-        """Handle a regular message (text reply)."""
+        """Handle a regular message (text reply).
+
+        NOTE: In headless mode, messages are routed via send_to_worker/send_to_operator
+        which use ProcessManager. Permission blocking is no longer needed since
+        permissions are handled via HTTP to permission_server.py.
+        """
         msg_id = msg.get("message_id")
         chat_id = str(msg.get("chat", {}).get("id"))
         topic_id = msg.get("message_thread_id")
@@ -401,18 +359,6 @@ class TelegramPoller:
         if not config.is_configured():
             log(f"  Skipping: not configured")
             return
-
-        # Check for pending permission on operator pane (applies to DMs and General topic)
-        operator_pane = config.operator_pane
-        if operator_pane and self._has_pending_permission(operator_pane):
-            # Route DMs and General topic to operator, but block if permission pending
-            is_dm = msg.get("chat", {}).get("type") == "private"
-            is_general = topic_id is None or topic_id == config.general_topic_id
-            if is_dm or (chat_id == str(config.group_id) and is_general):
-                log(f"  Blocked: pending permission on operator pane")
-                send_reply(self.bot_token, chat_id, msg_id,
-                    "⚠️ There's a pending permission prompt. Reply to that message to respond, or click Allow/Deny.")
-                return
 
         # Route DMs to operator
         if msg.get("chat", {}).get("type") == "private":
@@ -442,15 +388,9 @@ class TelegramPoller:
                 return
 
         # Route task topic messages to worker
-        worker_pane = get_worker_pane_for_topic(topic_id) if topic_id else None
-        if worker_pane:
-            # Check for pending permission on this pane
-            if self._has_pending_permission(worker_pane):
-                log(f"  Blocked: pending permission on pane {worker_pane}")
-                send_reply(self.bot_token, chat_id, msg_id,
-                    "⚠️ There's a pending permission prompt. Reply to that message to respond, or click Allow/Deny.")
-                return
-
+        # get_worker_pane_for_topic now returns task_name (not tmux pane)
+        worker_task = get_worker_pane_for_topic(topic_id) if topic_id else None
+        if worker_task:
             self._route_message(msg, lambda m: send_to_worker(topic_id, m), f"worker (topic {topic_id})")
             return
 
