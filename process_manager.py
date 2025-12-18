@@ -208,11 +208,16 @@ class ProcessManager:
         Raises:
             KeyError: If task_name doesn't exist and no cwd provided for resurrection
         """
+        log(f"send_to_process: task_name={task_name}, message={message}")
         process = self.processes.get(task_name)
+        log(f"send_to_process: process={process}, is_running={process.is_running if process else None}")
 
         # Check if process exists and is running
         if process is not None and process.is_running:
-            return await process.send_message(message)
+            log(f"send_to_process: sending to existing process")
+            result = await process.send_message(message)
+            log(f"send_to_process: send_message result={result}")
+            return result
 
         # Process dead or missing - try resurrection
         if process is not None:

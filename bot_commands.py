@@ -151,6 +151,7 @@ class CommandHandler:
 
     def _reply(self, chat_id: str, msg_id: int, text: str, parse_mode: str = "Markdown"):
         """Send a reply to a message."""
+        log(f"_reply: chat_id={chat_id}, msg_id={msg_id}, text={text}")
         send_reply(self.bot_token, chat_id, msg_id, text, parse_mode)
 
     def _typing(self, chat_id: str, topic_id: int = None):

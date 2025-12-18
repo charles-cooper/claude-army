@@ -279,14 +279,18 @@ class Daemon:
                         # Check if it's a command
                         if msg.text.startswith("/"):
                             # Build a minimal telegram message dict for command handler
+                            topic_id = self._get_topic_id_for_task(msg.task_id)
+                            group_chat_id = self.telegram._get_group_chat_id()
                             tg_msg = {
                                 "text": msg.text,
                                 "message_id": int(msg.msg_id),
-                                "chat": {"id": int(self.chat_id)},
-                                "message_thread_id": self._get_topic_id_for_task(msg.task_id),
+                                "chat": {"id": int(group_chat_id)},
+                                "message_thread_id": topic_id,
                                 "reply_to_message": msg.reply_to_message
                             }
+                            log(f"Command: text={msg.text}, topic_id={topic_id}, chat_id={group_chat_id}, reply_to_message={msg.reply_to_message}")
                             handled = self.command_handler.handle_command(tg_msg)
+                            log(f"Command handled={handled}")
                             if handled:
                                 continue
 
@@ -336,9 +340,11 @@ class Daemon:
         """Handle assistant message event."""
         # Extract text content
         text = extract_text(event)
+        log(f"_on_assistant_message: task={task_name}, text={text}")
         if text:
             # Send to Telegram (escape for MarkdownV2)
             escaped_text = escape_markdown_v2(text)
+            log(f"_on_assistant_message: sending to telegram, escaped_text={escaped_text}")
             await self.telegram.send_message(task_name, escaped_text)
 
         # Check for tool uses (these will be handled by permission hooks)
@@ -381,24 +387,26 @@ class Daemon:
         Uses existing process if running, otherwise resurrects from registry.
         Falls back to operator for unknown tasks.
         """
-        log(f"Routing message to {task_name}: {text[:50]}...")
+        log(f"_route_message_to_claude: task_name={task_name}, text={text}")
 
-        # Try to send to the specific task first
-        try:
-            if task_name != "operator" and self.process_manager.get_process(task_name):
-                log(f"Sending to task process: {task_name}")
+        # Try to send to the specific task first (send_to_process handles resurrection)
+        if task_name != "operator":
+            try:
+                log(f"_route_message_to_claude: sending to task process {task_name}")
                 success = await self.process_manager.send_to_process(task_name, text)
+                log(f"_route_message_to_claude: send success={success}")
                 if success:
                     return
-        except KeyError:
-            log(f"Task {task_name} not found, falling back to operator")
+            except KeyError:
+                log(f"_route_message_to_claude: task {task_name} not found, falling back to operator")
 
         # Fall back to operator
         try:
-            log("Sending to operator")
-            await self.process_manager.send_to_process("operator", text)
+            log(f"_route_message_to_claude: sending to operator")
+            success = await self.process_manager.send_to_process("operator", text)
+            log(f"_route_message_to_claude: operator send success={success}")
         except KeyError:
-            log(f"No operator process available for message: {text[:100]}")
+            log(f"_route_message_to_claude: no operator process available")
 
     def _get_topic_id_for_task(self, task_name: str) -> int | None:
         """Get Telegram topic_id for a task."""
@@ -423,7 +431,10 @@ class Daemon:
 
     def shutdown(self) -> None:
         """Immediate shutdown. No graceful cleanup needed - OS handles it."""
-        print("\nShutting down...", flush=True)
+        try:
+            print("\nShutting down...", flush=True)
+        except BrokenPipeError:
+            pass
         cleanup_pid_file()
         os._exit(0)
 

@@ -298,12 +298,13 @@ class ClaudeProcess:
         try:
             # Write JSONL to stdin
             line = json.dumps(message) + "\n"
+            log(f"ClaudeProcess.send_message: writing to stdin: {line}")
             self.process.stdin.write(line.encode('utf-8'))
             await self.process.stdin.drain()
-            log(f"Sent message: {text[:100]}...")
+            log(f"ClaudeProcess.send_message: success")
             return True
         except Exception as e:
-            log(f"Failed to send message: {e}")
+            log(f"ClaudeProcess.send_message: failed: {e}")
             return False
 
     async def events(self) -> AsyncIterator[SystemInit | AssistantMessage | UserMessage | SessionResult]:

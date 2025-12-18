@@ -118,6 +118,7 @@ class TelegramAdapter(FrontendAdapter):
 
         # None or general_topic_id -> operator
         if topic_id is None or topic_id == config.general_topic_id:
+            log(f"_get_task_id_from_topic: topic_id={topic_id} -> operator (general)")
             return "operator"
 
         # Look up in registry
@@ -125,10 +126,11 @@ class TelegramAdapter(FrontendAdapter):
         result = registry.find_task_by_topic(topic_id)
         if result:
             task_name, _ = result
+            log(f"_get_task_id_from_topic: topic_id={topic_id} -> {task_name} (registry)")
             return task_name
 
         # Unknown topic - route to operator with warning
-        log(f"Unknown topic_id {topic_id}, routing to operator")
+        log(f"_get_task_id_from_topic: topic_id={topic_id} -> operator (unknown topic)")
         return "operator"
 
     async def send_message(
@@ -356,7 +358,10 @@ class TelegramAdapter(FrontendAdapter):
         is_dm = msg.get("chat", {}).get("type") == "private"
         is_group = chat_id == self._get_group_chat_id()
 
+        log(f"_parse_message: msg_id={msg_id}, chat_id={chat_id}, topic_id={topic_id}, is_dm={is_dm}, is_group={is_group}, reply_to={reply_to}")
+
         if not is_dm and not is_group:
+            log(f"_parse_message: ignored (wrong chat)")
             return None
 
         # Determine task_id based on message context
@@ -364,6 +369,8 @@ class TelegramAdapter(FrontendAdapter):
             task_id = "operator"
         else:
             task_id = self._get_task_id_from_topic(topic_id)
+
+        log(f"_parse_message: task_id={task_id}, reply_to_message={reply_to_message}")
 
         return IncomingMessage(
             task_id=task_id,
