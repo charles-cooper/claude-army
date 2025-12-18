@@ -6,38 +6,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from session_worker import (
-    _get_session_name, get_worktree_path, get_worker_pane_for_topic,
-    is_worker_pane, create_claude_local_md, append_todo
+    get_worktree_path, get_worker_pane_for_topic, get_worker_process_for_topic,
+    is_worker_pane, is_worker_process, create_claude_local_md, append_todo
 )
-
-
-# =============================================================================
-# Session Naming Tests
-# =============================================================================
-
-
-class TestSessionNaming:
-    """Tests for session naming functions."""
-
-    def test_get_session_name_basic(self):
-        """Test _get_session_name prefixes with 'ca-'."""
-        result = _get_session_name("my_task")
-        assert result == "ca-my_task"
-
-    def test_get_session_name_with_numbers(self):
-        """Test _get_session_name with numeric characters."""
-        result = _get_session_name("task123")
-        assert result == "ca-task123"
-
-    def test_get_session_name_with_underscores(self):
-        """Test _get_session_name with underscores."""
-        result = _get_session_name("my_complex_task_name")
-        assert result == "ca-my_complex_task_name"
-
-    def test_get_session_name_with_hyphens(self):
-        """Test _get_session_name with hyphens."""
-        result = _get_session_name("my-task-name")
-        assert result == "ca-my-task-name"
 
 
 # =============================================================================
@@ -65,45 +36,86 @@ class TestWorktreePath:
 
 
 # =============================================================================
-# Worker Pane Lookup Tests
+# Worker Process Lookup Tests
 # =============================================================================
 
 
-class TestWorkerPaneLookup:
-    """Tests for worker pane lookup functions."""
+class TestWorkerProcessLookup:
+    """Tests for worker process lookup functions."""
 
-    def test_get_worker_pane_found(self, mock_registry):
-        """Test get_worker_pane_for_topic returns pane from registry."""
+    def test_get_worker_process_found(self, mock_registry):
+        """Test get_worker_process_for_topic returns task_name from registry."""
         mock_registry.tasks = {
-            "my_task": {"topic_id": 123, "pane": "ca-my_task:0.0"}
+            "my_task": {"topic_id": 123, "status": "active"}
         }
 
         with patch("session_worker.get_registry", return_value=mock_registry):
-            result = get_worker_pane_for_topic(123)
-            assert result == "ca-my_task:0.0"
+            result = get_worker_process_for_topic(123)
+            assert result == "my_task"
 
-    def test_get_worker_pane_not_found(self, mock_registry):
-        """Test get_worker_pane_for_topic returns None when not found."""
+    def test_get_worker_process_not_found(self, mock_registry):
+        """Test get_worker_process_for_topic returns None when not found."""
         mock_registry.tasks = {
-            "other_task": {"topic_id": 456, "pane": "ca-other:0.0"}
+            "other_task": {"topic_id": 456, "status": "active"}
         }
 
         with patch("session_worker.get_registry", return_value=mock_registry):
-            result = get_worker_pane_for_topic(123)
+            result = get_worker_process_for_topic(123)
             assert result is None
 
-    def test_get_worker_pane_no_pane_in_data(self, mock_registry):
-        """Test get_worker_pane_for_topic when task exists but no pane."""
+    def test_get_worker_process_paused_returns_none(self, mock_registry):
+        """Test get_worker_process_for_topic returns None for paused task."""
         mock_registry.tasks = {
-            "my_task": {"topic_id": 123}  # No pane key
+            "my_task": {"topic_id": 123, "status": "paused"}
+        }
+
+        with patch("session_worker.get_registry", return_value=mock_registry):
+            result = get_worker_process_for_topic(123)
+            assert result is None
+
+    def test_get_worker_pane_legacy_alias(self, mock_registry):
+        """Test get_worker_pane_for_topic is alias for get_worker_process_for_topic."""
+        mock_registry.tasks = {
+            "my_task": {"topic_id": 123, "status": "active"}
         }
 
         with patch("session_worker.get_registry", return_value=mock_registry):
             result = get_worker_pane_for_topic(123)
-            assert result is None
+            assert result == "my_task"
 
-    def test_is_worker_pane_true(self, mock_registry):
-        """Test is_worker_pane returns (True, topic_id) for worker pane."""
+    def test_is_worker_process_true(self, mock_registry):
+        """Test is_worker_process returns (True, topic_id) for known task."""
+        mock_registry.tasks = {
+            "my_task": {"topic_id": 123}
+        }
+
+        with patch("session_worker.get_registry", return_value=mock_registry):
+            is_worker, topic_id = is_worker_process("my_task")
+            assert is_worker is True
+            assert topic_id == 123
+
+    def test_is_worker_process_false(self, mock_registry):
+        """Test is_worker_process returns (False, None) for unknown task."""
+        mock_registry.tasks = {}
+
+        with patch("session_worker.get_registry", return_value=mock_registry):
+            is_worker, topic_id = is_worker_process("unknown_task")
+            assert is_worker is False
+            assert topic_id is None
+
+    def test_is_worker_pane_by_task_name(self, mock_registry):
+        """Test is_worker_pane finds task by task_name."""
+        mock_registry.tasks = {
+            "my_task": {"topic_id": 123}
+        }
+
+        with patch("session_worker.get_registry", return_value=mock_registry):
+            is_worker, topic_id = is_worker_pane("my_task")
+            assert is_worker is True
+            assert topic_id == 123
+
+    def test_is_worker_pane_by_pane_field(self, mock_registry):
+        """Test is_worker_pane finds task by pane field (legacy compatibility)."""
         mock_registry.tasks = {
             "my_task": {"topic_id": 123, "pane": "ca-my_task:0.0"}
         }
@@ -113,8 +125,8 @@ class TestWorkerPaneLookup:
             assert is_worker is True
             assert topic_id == 123
 
-    def test_is_worker_pane_false(self, mock_registry):
-        """Test is_worker_pane returns (False, None) for non-worker pane."""
+    def test_is_worker_pane_not_found(self, mock_registry):
+        """Test is_worker_pane returns (False, None) for unknown pane/task."""
         mock_registry.tasks = {
             "my_task": {"topic_id": 123, "pane": "ca-my_task:0.0"}
         }
