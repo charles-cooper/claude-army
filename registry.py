@@ -136,15 +136,6 @@ class Config(ReloadableJSON):
     def general_topic_id(self, value: int):
         self.set("general_topic_id", value)
 
-    @property
-    def operator_pane(self) -> str | None:
-        """The tmux pane for operator Claude."""
-        return self._data.get("operator_pane")
-
-    @operator_pane.setter
-    def operator_pane(self, value: str):
-        self.set("operator_pane", value)
-
     def is_configured(self) -> bool:
         """Check if Claude Army is configured."""
         return self.group_id is not None
@@ -249,13 +240,6 @@ class Registry(ReloadableJSON):
         """Find task by directory path."""
         for name, task_data in self._data["tasks"].items():
             if task_data.get("path") == path:
-                return (name, task_data)
-        return None
-
-    def find_task_by_pane(self, pane: str) -> tuple[str, dict] | None:
-        """Find task by tmux pane."""
-        for name, task_data in self._data["tasks"].items():
-            if task_data.get("pane") == pane:
                 return (name, task_data)
         return None
 
