@@ -194,3 +194,81 @@ class TestSetupProcessGroup:
              patch('daemon_core.os.getpgid', return_value=12345):
             # Should not raise
             cleanup_func()
+
+
+class TestDrainInitTurn:
+    """Test _drain_init_turn prevents init turn response from being sent to Telegram."""
+
+    @pytest.fixture
+    def mock_claude_process(self):
+        from unittest.mock import AsyncMock, MagicMock
+        import asyncio
+        process = MagicMock()
+        process.session_id = "test-session-123"
+        process.pid = 12345
+        process._event_queue = asyncio.Queue()
+        process.start = AsyncMock(return_value=True)
+        process.send_message = AsyncMock(return_value=True)
+        return process
+
+    @pytest.mark.asyncio
+    async def test_drain_init_turn_consumes_events_until_session_result(self, mock_claude_process):
+        from daemon_core import Daemon
+        from claude_process import SystemInit, AssistantMessage, SessionResult
+
+        init_event = SystemInit(session_id="test-session-123", tools=[], model="claude-sonnet-4", raw={})
+        assistant_event = AssistantMessage(
+            content=[{"type": "text", "text": "Init turn response"}],
+            model="claude-sonnet-4", msg_id="msg_init", raw={}
+        )
+        result_event = SessionResult(success=True, result="", cost=0.001, turns=1, raw={})
+
+        await mock_claude_process._event_queue.put(init_event)
+        await mock_claude_process._event_queue.put(assistant_event)
+        await mock_claude_process._event_queue.put(result_event)
+
+        daemon = Daemon("test_token", "123456789")
+        await daemon._drain_init_turn(mock_claude_process)
+
+        assert mock_claude_process._event_queue.empty()
+
+    @pytest.mark.asyncio
+    async def test_drain_init_turn_stops_at_session_result(self, mock_claude_process):
+        from daemon_core import Daemon
+        from claude_process import SystemInit, AssistantMessage, SessionResult
+
+        init_event = SystemInit(session_id="test-session-123", tools=[], model="claude-sonnet-4", raw={})
+        init_response = AssistantMessage(
+            content=[{"type": "text", "text": "Init response"}],
+            model="claude-sonnet-4", msg_id="msg_init", raw={}
+        )
+        init_result = SessionResult(success=True, result="", cost=0.001, turns=1, raw={})
+        subsequent_event = AssistantMessage(
+            content=[{"type": "text", "text": "User message response"}],
+            model="claude-sonnet-4", msg_id="msg_user", raw={}
+        )
+
+        await mock_claude_process._event_queue.put(init_event)
+        await mock_claude_process._event_queue.put(init_response)
+        await mock_claude_process._event_queue.put(init_result)
+        await mock_claude_process._event_queue.put(subsequent_event)
+
+        daemon = Daemon("test_token", "123456789")
+        await daemon._drain_init_turn(mock_claude_process)
+
+        assert not mock_claude_process._event_queue.empty()
+        remaining = await mock_claude_process._event_queue.get()
+        assert isinstance(remaining, AssistantMessage)
+        assert remaining.msg_id == "msg_user"
+
+    @pytest.mark.asyncio
+    async def test_drain_init_turn_handles_process_end(self, mock_claude_process):
+        from daemon_core import Daemon
+        from claude_process import SystemInit
+
+        init_event = SystemInit(session_id="test-session-123", tools=[], model="claude-sonnet-4", raw={})
+        await mock_claude_process._event_queue.put(init_event)
+        await mock_claude_process._event_queue.put(None)
+
+        daemon = Daemon("test_token", "123456789")
+        await daemon._drain_init_turn(mock_claude_process)

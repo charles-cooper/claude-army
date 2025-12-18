@@ -171,9 +171,9 @@ class Daemon:
                 raise RuntimeError("Failed to start operator process")
 
             self.process_manager.processes["operator"] = process
-            self.process_manager._start_event_task("operator", process)
 
             # Wait for session_id from init event (should come quickly)
+            # Don't start event task yet - we need to handle init turn first
             await asyncio.sleep(0.5)
 
             # Send initial prompt
@@ -183,6 +183,13 @@ class Daemon:
                 "Use the tools available to manage the task registry and spawn new workers as needed."
             )
             await process.send_message(prompt)
+
+            # Wait for init turn to complete (SessionResult) before starting event handler
+            # This prevents the init response from being sent to Telegram after user's first message
+            await self._drain_init_turn(process)
+
+            # Now start event task for subsequent user messages
+            self.process_manager._start_event_task("operator", process)
 
             # Update registry with operator task
             operator_data = {
@@ -198,6 +205,36 @@ class Daemon:
             log("Operator spawned successfully")
         except Exception as e:
             log(f"Failed to spawn operator: {e}")
+
+    async def _drain_init_turn(self, process: ClaudeProcess) -> None:
+        """Drain events from init turn until SessionResult.
+
+        Reads events directly from process queue (before event task is started)
+        and logs them without forwarding to Telegram. This ensures the init
+        turn response doesn't get mixed with user message responses.
+        """
+        timeout = 120.0  # Init turn may take a while with tool use
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    event = await process._event_queue.get()
+                    if event is None:
+                        log("Init turn: process ended unexpectedly")
+                        break
+                    if isinstance(event, SystemInit):
+                        log(f"Init turn: session_id={event.session_id}")
+                    elif isinstance(event, AssistantMessage):
+                        text = extract_text(event)
+                        tools = extract_tool_uses(event)
+                        if text:
+                            log(f"Init turn response: {text}")
+                        for tool in tools:
+                            log(f"Init turn: calling {tool.name}")
+                    elif isinstance(event, SessionResult):
+                        log(f"Init turn complete: success={event.success}, cost=${event.cost:.4f}")
+                        break
+        except asyncio.TimeoutError:
+            log(f"Init turn timed out after {timeout}s")
 
     async def run(self) -> None:
         """Main event loop - runs until signal handler calls os._exit()."""
