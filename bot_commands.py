@@ -119,20 +119,22 @@ def build_operator_intervention_prompt(task_name: str, task_data: dict, pane_out
     lines.append(f"Task: {task_name}")
     lines.append(f"Type: {task_data.get('type', 'session')}")
     lines.append(f"Path: {task_data.get('path', '?')}")
-    lines.append(f"Pane: {task_data.get('pane', '?')}")
+    lines.append(f"Session ID: {task_data.get('session_id', '?')}")
+    lines.append(f"PID: {task_data.get('pid', '?')}")
     lines.append("")
     lines.append("User request:")
     lines.append(user_message if user_message else "(no message - just get it unstuck)")
     lines.append("")
-    lines.append("Current pane output:")
-    lines.append("```")
-    lines.append(pane_output)
-    lines.append("```")
-    lines.append("")
+    if pane_output and pane_output != "(use tools to inspect)":
+        lines.append("Current output:")
+        lines.append("```")
+        lines.append(pane_output)
+        lines.append("```")
+        lines.append("")
     lines.append("-" * 40)
     lines.append("Please intervene in this session. You can:")
-    lines.append("- Send tmux commands to the pane")
-    lines.append("- Send text/keystrokes to Claude")
+    lines.append("- Send messages to the task")
+    lines.append("- Inspect the task state using available tools")
     lines.append("- Analyze the situation and advise the user")
     lines.append("-" * 40)
     return "\n".join(lines)
@@ -141,10 +143,11 @@ def build_operator_intervention_prompt(task_name: str, task_data: dict, pane_out
 class CommandHandler:
     """Handles bot commands like /debug, /todo, /setup."""
 
-    def __init__(self, bot_token: str, chat_id: str, state: State):
+    def __init__(self, bot_token: str, chat_id: str, state: State, process_manager=None):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.state = state
+        self.process_manager = process_manager  # Optional ProcessManager for new architecture
 
     def _reply(self, chat_id: str, msg_id: int, text: str, parse_mode: str = "Markdown"):
         """Send a reply to a message."""
@@ -182,7 +185,7 @@ class CommandHandler:
         reply_str = str(reply_msg_id)
         if reply_str in self.state:
             entry = self.state.get(reply_str)
-            state_info = f"\nState: type={entry.get('type')}, pane={entry.get('pane')}"
+            state_info = f"\nState: type={entry.get('type')}, task={entry.get('task')}"
 
         ts = datetime.datetime.fromtimestamp(reply_date).strftime("%H:%M:%S") if reply_date else "?"
         return f"[Replying to msg_id={reply_msg_id} from {reply_from} at {ts}]\n{reply_text}{state_info}"
@@ -229,16 +232,6 @@ class CommandHandler:
         # /cleanup - clean up a task (routes to operator)
         if text_lower.startswith("/cleanup"):
             self._handle_cleanup(msg, chat_id, msg_id, text, topic_id)
-            return True
-
-        # /show-tmux-command - show tmux attach command
-        if text_lower.startswith("/show-tmux-command"):
-            self._handle_show_tmux_command(chat_id, msg_id, topic_id)
-            return True
-
-        # /dump - dump tmux pane output
-        if text_lower.startswith("/dump"):
-            self._handle_dump(chat_id, msg_id, topic_id)
             return True
 
         # /rebuild-registry - maintenance command to rebuild from markers
@@ -400,8 +393,8 @@ class CommandHandler:
         config.general_topic_id = 1  # General topic in forums
 
         # Start operator session
-        pane = start_operator_session()
-        if pane:
+        process_id = start_operator_session()
+        if process_id:
             self._reply(chat_id, msg_id,
                 "Claude Army initialized!\n\n"
                 "Operator Claude is running. Send messages here to interact.\n\n"
@@ -409,7 +402,7 @@ class CommandHandler:
         else:
             self._reply(chat_id, msg_id,
                 "Claude Army configured, but failed to start Operator session.\n"
-                "Check tmux availability.")
+                "Check that the Claude CLI is available.")
 
         log(f"  Setup complete for group {chat_id_int}")
 
@@ -429,12 +422,25 @@ class CommandHandler:
 
         lines = ["*Task Status*\n"]
         for task_name, task_data in tasks:
+            # Check if process is running (if ProcessManager available)
+            is_running = False
+            if self.process_manager:
+                is_running = self.process_manager.is_running(task_name)
+
             status = task_data.get("status", "unknown")
             task_type = task_data.get("type", "session")
             topic_id = task_data.get("topic_id", "?")
-            emoji = "▶️" if status == "active" else "⏸️" if status == "paused" else "❓"
+
+            # Show running status if ProcessManager available
+            if self.process_manager:
+                emoji = "▶️" if is_running else "⏸️"
+                status_text = "running" if is_running else "stopped"
+            else:
+                emoji = "▶️" if status == "active" else "⏸️" if status == "paused" else "❓"
+                status_text = status
+
             type_indicator = "🌳" if task_type == "worktree" else "📁"
-            lines.append(f"{emoji}{type_indicator} `{task_name}` ({status})")
+            lines.append(f"{emoji}{type_indicator} `{task_name}` ({status_text})")
 
         self._reply(chat_id, msg_id, "\n".join(lines))
 
@@ -477,8 +483,6 @@ class CommandHandler:
 
     def _handle_operator(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /operator - request operator intervention for current task."""
-        import subprocess
-
         config = get_config()
         if not config.is_configured():
             self._reply(chat_id, msg_id, "Not configured. Run /setup first.")
@@ -488,31 +492,18 @@ class CommandHandler:
         user_message = parse_command_args(text) or ""
 
         # Get task context - must be from a task topic
-        result = self._get_pane_for_topic(topic_id)
-        if not result:
+        task_name = self._get_task_name_for_topic(topic_id)
+        if not task_name or task_name == "operator":
             self._reply(chat_id, msg_id, "Send from a task topic to request intervention.")
-            return
-
-        task_name, pane = result
-        if not pane:
-            self._reply(chat_id, msg_id, f"No tmux pane found for '{task_name}'.")
             return
 
         # Get task data from registry
         registry = get_registry()
-        task_data = registry.get_task(task_name) or {"pane": pane}
+        task_data = registry.get_task(task_name) or {}
 
-        # Capture pane output
-        try:
-            output = subprocess.run(
-                ["tmux", "capture-pane", "-t", pane, "-p", "-S", "-50"],
-                capture_output=True, text=True, timeout=5
-            )
-            pane_output = output.stdout.rstrip('\n') if output.returncode == 0 else "(failed to capture)"
-        except Exception:
-            pane_output = "(failed to capture)"
-
-        prompt = build_operator_intervention_prompt(task_name, task_data, pane_output, user_message)
+        # Build simplified intervention prompt (without pane output for now)
+        # In new architecture, operator can use tools to inspect task state
+        prompt = build_operator_intervention_prompt(task_name, task_data, "(use tools to inspect)", user_message)
         if send_to_operator(prompt):
             self._typing(chat_id, topic_id)
             log(f"  /operator sent to operator: {task_name}")
@@ -577,86 +568,19 @@ class CommandHandler:
         log(f"  /cleanup sent to operator: {task_name}")
         self._reply_sent_to_operator(chat_id, msg_id, topic_id)
 
-    def _get_pane_for_topic(self, topic_id: int | None) -> tuple[str, str] | None:
-        """Get (task_name, pane) for a topic. Returns operator for General topic."""
+    def _get_task_name_for_topic(self, topic_id: int | None) -> str | None:
+        """Get task name for a topic. Returns 'operator' for General topic."""
         config = get_config()
         is_general = topic_id is None or topic_id == config.general_topic_id
         if is_general:
-            pane = config.operator_pane
-            return ("operator", pane) if pane else None
+            return "operator"
 
         registry = get_registry()
         result = registry.find_task_by_topic(topic_id)
         if result:
             task_name, task_data = result
-            return (task_name, task_data.get("pane"))
+            return task_name
         return None
-
-    def _handle_show_tmux_command(self, chat_id: str, msg_id: int, topic_id: int | None):
-        """Handle /show-tmux-command - show tmux attach command for task."""
-        result = self._get_pane_for_topic(topic_id)
-        if not result:
-            self._reply(chat_id, msg_id, "Send from a task topic to get its tmux command.")
-            return
-
-        task_name, pane = result
-        session = pane.split(":")[0] if pane and ":" in pane else pane
-
-        if session:
-            self._reply(chat_id, msg_id, f"`tmux attach -t {session}`")
-        else:
-            self._reply(chat_id, msg_id, f"No tmux session found for '{task_name}'.")
-
-    def _handle_dump(self, chat_id: str, msg_id: int, topic_id: int | None):
-        """Handle /dump - dump tmux pane output.
-
-        Formats output to fit Telegram's 430px message width (~50 chars).
-        """
-        import subprocess
-
-        result = self._get_pane_for_topic(topic_id)
-        if not result:
-            self._reply(chat_id, msg_id, "Send from a task topic to dump its output.")
-            return
-
-        task_name, pane = result
-        if not pane:
-            self._reply(chat_id, msg_id, f"No tmux pane found for '{task_name}'.")
-            return
-
-        # Telegram msgMaxWidth is 430px, ~50 chars to avoid wrapping
-        MAX_WIDTH = 50
-        MAX_LINES = 35
-
-        try:
-            output = subprocess.run(
-                ["tmux", "capture-pane", "-t", pane, "-p"],
-                capture_output=True, text=True, timeout=5
-            )
-            if output.returncode != 0:
-                self._reply(chat_id, msg_id, f"Failed to capture pane: {output.stderr}")
-                return
-
-            raw_lines = output.stdout.rstrip('\n').split('\n')
-            if not raw_lines or (len(raw_lines) == 1 and not raw_lines[0]):
-                self._reply(chat_id, msg_id, "_Pane is empty_")
-                return
-
-            # Truncate lines to MAX_WIDTH, take last MAX_LINES
-            truncated = []
-            for line in raw_lines[-MAX_LINES:]:
-                if len(line) > MAX_WIDTH:
-                    truncated.append(line[:MAX_WIDTH-1] + "…")
-                else:
-                    truncated.append(line)
-
-            text = '\n'.join(truncated)
-            prefix = f"_{task_name}_ (last {len(truncated)} lines)\n"
-            self._reply(chat_id, msg_id, f"{prefix}```\n{text}\n```")
-        except subprocess.TimeoutExpired:
-            self._reply(chat_id, msg_id, "Timeout capturing pane.")
-        except Exception as e:
-            self._reply(chat_id, msg_id, f"Error: {e}")
 
     def _handle_help(self, chat_id: str, msg_id: int):
         """Handle /help - show available commands."""
@@ -664,23 +588,21 @@ class CommandHandler:
 
         help_text = """*Claude Army Commands*
 
-/dump - Dump tmux pane output
-/debug - Show debug info for a message (reply to it)
-/show-tmux-command - Show tmux attach command
-/spawn <desc> - Create a new task
 /status - Show all tasks and status
+/spawn <desc> - Create a new task
 /cleanup - Clean up current task
-/help - Show this help message
-/todo <item> - Add todo to Operator queue
-/setup - Initialize this group as control center
-/summarize - Have operator summarize all tasks
+/todo <item> - Add todo to task or operator
 /operator [msg] - Request operator intervention for task
+/summarize - Have operator summarize all tasks
+/debug - Show debug info for a message (reply to it)
+/help - Show this help message
+/setup - Initialize this group as control center
 /rebuild-registry - Rebuild registry from markers (maintenance)
 
 *Operator Commands* (natural language):
 - "Create task X in repo Y"
 - "What's the status?"
-- "Pause/resume task X"
+- Send any message to interact with operator
 """
         if config.is_configured():
             help_text += f"\n_Status: Configured (group {config.group_id})_"
