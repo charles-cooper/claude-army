@@ -310,20 +310,33 @@ class Daemon:
                 try:
                     # Check for pending permissions that don't have Telegram notifications yet
                     with self.permission_manager._lock:
-                        for tool_use_id, pending in list(self.permission_manager.pending.items()):
-                            if pending.telegram_msg_id is None:
-                                # Send notification
-                                task_name = self._get_task_for_session(pending.session_id)
-                                if task_name:
-                                    topic_id = self._get_topic_id_for_task(task_name)
-                                    if topic_id:
-                                        send_permission_notification(
-                                            self.permission_manager,
-                                            self.bot_token,
-                                            self.chat_id,
-                                            topic_id,
-                                            tool_use_id
-                                        )
+                        pending_count = len(self.permission_manager.pending)
+                        pending_items = list(self.permission_manager.pending.items())
+
+                    if pending_count > 0:
+                        log(f"Permission check: {pending_count} pending requests")
+
+                    for tool_use_id, pending in pending_items:
+                        if pending.telegram_msg_id is None:
+                            log(f"Permission needs notification: {pending.tool_name} ({tool_use_id[:20]}...)")
+                            # Send notification
+                            task_name = self._get_task_for_session(pending.session_id)
+                            log(f"Permission task lookup: session={pending.session_id[:20]}... -> task={task_name}")
+                            if task_name:
+                                topic_id = self._get_topic_id_for_task(task_name)
+                                log(f"Permission topic lookup: task={task_name} -> topic_id={topic_id}")
+                                if topic_id:
+                                    send_permission_notification(
+                                        self.permission_manager,
+                                        self.bot_token,
+                                        self.chat_id,
+                                        topic_id,
+                                        tool_use_id
+                                    )
+                                else:
+                                    log(f"Permission skip: no topic_id for task {task_name}")
+                            else:
+                                log(f"Permission skip: no task found for session {pending.session_id[:20]}...")
                 except Exception as e:
                     log(f"Error checking pending permissions: {e}")
 
@@ -350,7 +363,23 @@ class Daemon:
         # Check for tool uses (these will be handled by permission hooks)
         tools = extract_tool_uses(event)
         if tools:
-            log(f"Assistant requested {len(tools)} tools: {[t.name for t in tools]}")
+            tool_details = []
+            for t in tools:
+                detail = t.name
+                # Add relevant input details for common tools
+                if t.name == "Bash" and "command" in t.input:
+                    cmd = t.input["command"]
+                    detail = f"Bash({cmd[:80]}{'...' if len(cmd) > 80 else ''})"
+                elif t.name == "Read" and "file_path" in t.input:
+                    detail = f"Read({t.input['file_path']})"
+                elif t.name in ("Write", "Edit") and "file_path" in t.input:
+                    detail = f"{t.name}({t.input['file_path']})"
+                elif t.name == "Grep" and "pattern" in t.input:
+                    detail = f"Grep({t.input['pattern']})"
+                elif t.name == "Glob" and "pattern" in t.input:
+                    detail = f"Glob({t.input['pattern']})"
+                tool_details.append(detail)
+            log(f"Assistant requested {len(tools)} tools: {tool_details}")
 
     async def _on_session_result(self, task_name: str, event: SessionResult) -> None:
         """Handle session result event - marks end of a turn, not end of session."""
