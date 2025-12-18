@@ -840,3 +840,116 @@ class TestTelegramAdapterIncoming:
 
         assert len(messages) == 1
         assert messages[0].reply_to_msg_id == "50"
+
+
+@pytest.mark.asyncio
+class TestParseMessageGroupRouting:
+    """Test _parse_message correctly routes group messages.
+
+    These tests verify the fix for the routing bug where config.group_id=None
+    caused str(None)="None" to never match any chat_id, breaking message routing.
+    """
+
+    async def test_parse_message_group_id_none_uses_constructor_chat_id(self):
+        """Test _parse_message matches group when config.group_id is None.
+
+        Bug: When config.group_id was None, str(None)="None" never matched chat_id.
+        Fix: Use _get_group_chat_id() which falls back to self.chat_id.
+        """
+        with patch("telegram_adapter.get_registry") as mock_registry, \
+             patch("telegram_adapter.get_config") as mock_config:
+
+            mock_reg_instance = MagicMock()
+            mock_reg_instance.find_task_by_topic.return_value = ("test_task", {})
+            mock_registry.return_value = mock_reg_instance
+
+            mock_cfg_instance = MagicMock()
+            mock_cfg_instance.group_id = None  # Bug trigger: None -> "None"
+            mock_cfg_instance.general_topic_id = 1
+            mock_cfg_instance.get.return_value = 0
+            mock_config.return_value = mock_cfg_instance
+
+            from telegram_adapter import TelegramAdapter
+
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            # Message from the same chat as constructor chat_id
+            msg = {
+                "message_id": 100,
+                "chat": {"id": -1001234567890, "type": "supergroup"},
+                "message_thread_id": 456,
+                "text": "Hello from group",
+            }
+
+            result = adapter._parse_message(msg)
+
+            # Should NOT be None - message should be accepted
+            assert result is not None
+            assert result.text == "Hello from group"
+            assert result.task_id == "test_task"
+
+    async def test_parse_message_group_id_set_matches_config(self):
+        """Test _parse_message uses config.group_id when set."""
+        with patch("telegram_adapter.get_registry") as mock_registry, \
+             patch("telegram_adapter.get_config") as mock_config:
+
+            mock_reg_instance = MagicMock()
+            mock_reg_instance.find_task_by_topic.return_value = ("task_abc", {})
+            mock_registry.return_value = mock_reg_instance
+
+            mock_cfg_instance = MagicMock()
+            mock_cfg_instance.group_id = -1009999999999  # Different from constructor
+            mock_cfg_instance.general_topic_id = 1
+            mock_cfg_instance.get.return_value = 0
+            mock_config.return_value = mock_cfg_instance
+
+            from telegram_adapter import TelegramAdapter
+
+            # Constructor uses different chat_id
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            # Message from config.group_id chat (not constructor chat_id)
+            msg = {
+                "message_id": 101,
+                "chat": {"id": -1009999999999, "type": "supergroup"},
+                "message_thread_id": 789,
+                "text": "Hello from configured group",
+            }
+
+            result = adapter._parse_message(msg)
+
+            # Should accept message from config.group_id
+            assert result is not None
+            assert result.text == "Hello from configured group"
+            assert result.task_id == "task_abc"
+
+    async def test_parse_message_rejects_wrong_group_when_config_set(self):
+        """Test _parse_message rejects messages from wrong group when config.group_id is set."""
+        with patch("telegram_adapter.get_registry") as mock_registry, \
+             patch("telegram_adapter.get_config") as mock_config:
+
+            mock_reg_instance = MagicMock()
+            mock_registry.return_value = mock_reg_instance
+
+            mock_cfg_instance = MagicMock()
+            mock_cfg_instance.group_id = -1009999999999  # Specific group configured
+            mock_cfg_instance.general_topic_id = 1
+            mock_cfg_instance.get.return_value = 0
+            mock_config.return_value = mock_cfg_instance
+
+            from telegram_adapter import TelegramAdapter
+
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+            # Message from constructor chat_id (not config.group_id)
+            msg = {
+                "message_id": 102,
+                "chat": {"id": -1001234567890, "type": "supergroup"},
+                "message_thread_id": 123,
+                "text": "Message from wrong group",
+            }
+
+            result = adapter._parse_message(msg)
+
+            # Should reject - chat doesn't match config.group_id
+            assert result is None
