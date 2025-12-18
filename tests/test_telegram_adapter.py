@@ -7,6 +7,36 @@ from unittest.mock import MagicMock, patch
 import requests
 
 
+class TestTelegramAdapterShutdown:
+    """Test TelegramAdapter shutdown behavior."""
+
+    def test_stop_sets_shutdown_flag(self):
+        """Test stop() sets _shutdown flag."""
+        with patch("telegram_adapter.get_config") as mock_config:
+            mock_cfg = MagicMock()
+            mock_cfg.get.return_value = 0
+            mock_config.return_value = mock_cfg
+
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "CHAT", timeout=1)
+
+            assert adapter._shutdown is False
+            adapter.stop()
+            assert adapter._shutdown is True
+
+    def test_init_sets_shutdown_false(self):
+        """Test __init__ initializes _shutdown to False."""
+        with patch("telegram_adapter.get_config") as mock_config:
+            mock_cfg = MagicMock()
+            mock_cfg.get.return_value = 0
+            mock_config.return_value = mock_cfg
+
+            from telegram_adapter import TelegramAdapter
+            adapter = TelegramAdapter("TOKEN", "CHAT", timeout=1)
+
+            assert adapter._shutdown is False
+
+
 class TestMockTelegramServer:
     """Test mock Telegram server behaves correctly."""
 

@@ -5,6 +5,11 @@ Implements the FrontendAdapter interface for Telegram, handling:
 - Polling for updates (messages, callbacks)
 - Button interactions
 - Permission prompt handling
+
+Threading model:
+- All public methods are async-safe (use asyncio.to_thread for blocking I/O)
+- Internal _parse_* methods are sync (pure computation)
+- Call stop() before cancelling to signal clean shutdown
 """
 
 import asyncio
@@ -46,6 +51,16 @@ class TelegramAdapter(FrontendAdapter):
         # Load offset from config for crash recovery
         config = get_config()
         self.offset = config.get("telegram_offset", 0)
+
+        # Shutdown flag for clean exit
+        self._shutdown = False
+
+    def stop(self) -> None:
+        """Signal the adapter to stop polling.
+
+        Call this before cancelling tasks to ensure clean shutdown.
+        """
+        self._shutdown = True
 
     def _get_topic_id(self, task_id: str) -> int | None:
         """Get Telegram topic_id for a task_id.
@@ -230,15 +245,23 @@ class TelegramAdapter(FrontendAdapter):
 
         Yields:
             IncomingMessage objects
+
+        Note:
+            Call stop() to signal shutdown. The generator will exit cleanly
+            after the current poll completes.
         """
-        while True:
+        while not self._shutdown:
             try:
-                # Poll Telegram API
-                resp = requests.get(
+                # Poll Telegram API (in thread to avoid blocking event loop)
+                resp = await asyncio.to_thread(
+                    requests.get,
                     f"https://api.telegram.org/bot{self.bot_token}/getUpdates",
                     params={"offset": self.offset, "timeout": self.timeout},
                     timeout=self.timeout + 2
                 )
+
+                if self._shutdown:
+                    return
 
                 if not resp.ok:
                     await asyncio.sleep(1)
@@ -250,6 +273,9 @@ class TelegramAdapter(FrontendAdapter):
                     log(f"Got {len(updates)} Telegram updates")
 
                 for update in updates:
+                    if self._shutdown:
+                        return
+
                     # Update offset for next poll
                     self.offset = update["update_id"] + 1
 
@@ -278,6 +304,9 @@ class TelegramAdapter(FrontendAdapter):
                         if incoming:
                             yield incoming
 
+            except asyncio.CancelledError:
+                log("Telegram poller cancelled")
+                return
             except requests.exceptions.RequestException as e:
                 log(f"Telegram poll error: {e}")
                 await asyncio.sleep(1)

@@ -2,6 +2,19 @@
 
 This module contains all daemon logic in an importable form.
 The telegram-daemon.py script is the executable entry point.
+
+Threading model:
+- Main event loop: asyncio (handles Claude events, Telegram polling, permission checks)
+- Permission HTTP server: separate daemon thread (threading.Thread)
+- Telegram polling: uses asyncio.to_thread() for blocking HTTP calls
+- Claude subprocesses: managed via asyncio.create_subprocess_exec()
+
+Shutdown sequence:
+1. Signal received (SIGINT/SIGTERM)
+2. telegram.stop() signals poller to exit
+3. process_manager.stop_all() terminates Claude subprocesses
+4. _shutdown_event signals run() to cancel tasks
+5. Tasks cancelled and gathered
 """
 
 import asyncio
@@ -348,23 +361,27 @@ class Daemon:
                 return task_name
         return None
 
-    async def shutdown(self, timeout: float = 30.0) -> None:
+    async def shutdown(self, timeout: float = 0.5) -> None:
         """Graceful shutdown with timeout.
 
         Args:
-            timeout: Max seconds to wait for processes to stop before forcing.
+            timeout: Max seconds to wait for processes to stop (default 0.5s).
+                     After timeout, OS will clean up remaining processes on exit.
         """
         if not self._running:
             return
 
-        log("Shutting down daemon...")
+        print("\nShutting down...", flush=True)
         self._running = False
 
-        # Stop all processes with timeout
+        # Signal Telegram poller to stop (allows current poll to complete)
+        self.telegram.stop()
+
+        # Stop Claude subprocesses with short timeout
         try:
             await asyncio.wait_for(self.process_manager.stop_all(), timeout=timeout)
         except asyncio.TimeoutError:
-            log(f"Shutdown timed out after {timeout}s, forcing exit")
+            log(f"Cleanup timed out after {timeout}s, forcing exit")
 
         # Signal main loop to exit
         self._shutdown_event.set()
