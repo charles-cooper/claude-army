@@ -66,6 +66,16 @@ class TelegramAdapter(FrontendAdapter):
         self._shutdown = True
         self._session.close()
 
+    def _get_group_chat_id(self) -> str:
+        """Get the group chat ID to use for sending messages.
+
+        Uses registry config group_id if available, otherwise falls back to
+        the chat_id passed to constructor. This ensures outgoing messages
+        go to the same group that incoming messages are filtered from.
+        """
+        config = get_config()
+        return str(config.group_id) if config.group_id else self.chat_id
+
     def _get_topic_id(self, task_id: str) -> int | None:
         """Get Telegram topic_id for a task_id.
 
@@ -153,9 +163,11 @@ class TelegramAdapter(FrontendAdapter):
                 ]
             }
 
+        target_chat_id = self._get_group_chat_id()
+        log(f"send_message: chat_id={target_chat_id}, topic_id={topic_id}, task_id={task_id}")
         response = send_to_topic(
             self.bot_token,
-            self.chat_id,
+            target_chat_id,
             topic_id,
             content,
             reply_markup=reply_markup,
@@ -189,12 +201,14 @@ class TelegramAdapter(FrontendAdapter):
         if buttons is None:
             return
 
+        target_chat_id = self._get_group_chat_id()
+
         # Support both list[dict] format and simple string label
         if isinstance(buttons, str):
             # Single disabled button with label
             update_message_buttons(
                 self.bot_token,
-                self.chat_id,
+                target_chat_id,
                 int(msg_id),
                 buttons
             )
@@ -209,7 +223,7 @@ class TelegramAdapter(FrontendAdapter):
             self._session.post(
                 f"https://api.telegram.org/bot{self.bot_token}/editMessageReplyMarkup",
                 json={
-                    "chat_id": self.chat_id,
+                    "chat_id": target_chat_id,
                     "message_id": int(msg_id),
                     "reply_markup": reply_markup
                 }
@@ -222,7 +236,7 @@ class TelegramAdapter(FrontendAdapter):
             task_id: Task identifier (unused, msg_id is global)
             msg_id: Message ID to delete
         """
-        tg_delete_message(self.bot_token, self.chat_id, int(msg_id))
+        tg_delete_message(self.bot_token, self._get_group_chat_id(), int(msg_id))
 
     async def show_typing(self, task_id: str):
         """Show typing indicator in Telegram topic.
@@ -234,7 +248,7 @@ class TelegramAdapter(FrontendAdapter):
         if topic_id:
             send_chat_action(
                 self.bot_token,
-                self.chat_id,
+                self._get_group_chat_id(),
                 action="typing",
                 topic_id=topic_id
             )

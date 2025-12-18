@@ -98,9 +98,12 @@ class ClaudeProcess:
             return False
 
         # Build command
+        # Note: --output-format stream-json implies print mode internally
+        # --verbose is required for stream-json output
+        # Without explicit -p, session should stay alive for multi-turn
         cmd = [
             "claude",
-            "-p",
+            "--verbose",
             "--output-format", "stream-json",
             "--input-format", "stream-json",
         ]
@@ -242,6 +245,10 @@ class ClaudeProcess:
             )
             await self._event_queue.put(result)
             log(f"Session result: success={result.success}, cost=${result.cost:.4f}")
+
+        else:
+            # Log unhandled event types for debugging
+            log(f"Unhandled event type: {event_type} - {event}")
 
     async def send_message(self, text: str) -> bool:
         """Send a user message to Claude.

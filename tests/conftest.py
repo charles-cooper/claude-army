@@ -621,3 +621,54 @@ def transcript_file(temp_dir):
         return str(path)
 
     return write_lines
+
+
+# =============================================================================
+# Telegram Adapter Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def mock_telegram_config():
+    """Common mock for get_config and get_registry in telegram_adapter tests."""
+    import requests
+
+    with patch("telegram_adapter.get_registry") as mock_registry, \
+         patch("telegram_adapter.get_config") as mock_config:
+
+        mock_reg_instance = MagicMock()
+        mock_reg_instance.find_task_by_topic.return_value = ("test_task", {})
+        mock_registry.return_value = mock_reg_instance
+
+        mock_cfg_instance = MagicMock()
+        mock_cfg_instance.general_topic_id = 1
+        mock_cfg_instance.group_id = -1001234567890
+        mock_cfg_instance.get.return_value = 0
+        mock_cfg_instance.set = MagicMock()
+        mock_cfg_instance.store_topic_mapping = MagicMock()
+        mock_config.return_value = mock_cfg_instance
+
+        yield mock_cfg_instance, mock_reg_instance
+
+
+@pytest.fixture
+def telegram_adapter_with_mock(mock_telegram_server, mock_telegram_config):
+    """TelegramAdapter with session.get patched to use mock server."""
+    import requests
+    from telegram_adapter import TelegramAdapter
+
+    adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+
+    original_get = adapter._session.get
+
+    def patched_get(url, **kwargs):
+        if "api.telegram.org" in url:
+            method = url.split("/")[-1]
+            return requests.post(
+                f"{mock_telegram_server.base_url}/bot_TOKEN/{method}",
+                json=kwargs.get("params", {}),
+            )
+        return original_get(url, **kwargs)
+
+    with patch.object(adapter._session, "get", patched_get):
+        yield adapter

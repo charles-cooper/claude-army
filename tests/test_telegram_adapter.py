@@ -499,6 +499,7 @@ class TestTelegramAdapterAdvanced:
 
             mock_cfg_instance = MagicMock()
             mock_cfg_instance.general_topic_id = 1
+            mock_cfg_instance.group_id = -1001234567890
             mock_cfg_instance.get.return_value = 0
             mock_config.return_value = mock_cfg_instance
 
@@ -561,6 +562,7 @@ class TestTelegramAdapterAdvanced:
 
             mock_cfg_instance = MagicMock()
             mock_cfg_instance.general_topic_id = 1
+            mock_cfg_instance.group_id = -1001234567890
             mock_cfg_instance.get.return_value = 0
             mock_config.return_value = mock_cfg_instance
 
@@ -598,401 +600,243 @@ class TestTelegramAdapterAdvanced:
 
 
 @pytest.mark.asyncio
+class TestTelegramAdapterGroupChatId:
+    """Test _get_group_chat_id routing logic."""
+
+    async def test_get_group_chat_id_uses_registry_config(self, mock_telegram_server):
+        """Test _get_group_chat_id prefers config.group_id over constructor chat_id."""
+        with patch("telegram_adapter.get_registry") as mock_registry, \
+             patch("telegram_adapter.get_config") as mock_config:
+
+            mock_reg_instance = MagicMock()
+            mock_registry.return_value = mock_reg_instance
+
+            mock_cfg_instance = MagicMock()
+            mock_cfg_instance.group_id = -1009999999999  # Different from constructor
+            mock_cfg_instance.get.return_value = 0
+            mock_config.return_value = mock_cfg_instance
+
+            from telegram_adapter import TelegramAdapter
+
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+            chat_id = adapter._get_group_chat_id()
+
+            # Should use config.group_id, not constructor chat_id
+            assert chat_id == "-1009999999999"
+
+    async def test_get_group_chat_id_fallback_to_constructor(self, mock_telegram_server):
+        """Test _get_group_chat_id falls back to constructor chat_id when config.group_id is None."""
+        with patch("telegram_adapter.get_registry") as mock_registry, \
+             patch("telegram_adapter.get_config") as mock_config:
+
+            mock_reg_instance = MagicMock()
+            mock_registry.return_value = mock_reg_instance
+
+            mock_cfg_instance = MagicMock()
+            mock_cfg_instance.group_id = None  # Not configured
+            mock_cfg_instance.get.return_value = 0
+            mock_config.return_value = mock_cfg_instance
+
+            from telegram_adapter import TelegramAdapter
+
+            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+            chat_id = adapter._get_group_chat_id()
+
+            # Should fall back to constructor chat_id
+            assert chat_id == "-1001234567890"
+
+
+@pytest.mark.asyncio
 class TestTelegramAdapterIncoming:
     """Test TelegramAdapter incoming_messages method."""
 
-    async def test_incoming_messages_text(self, mock_telegram_server):
+    async def test_incoming_messages_text(self, mock_telegram_server, telegram_adapter_with_mock):
         """Test incoming_messages yields text messages."""
-        with patch("telegram_adapter.get_registry") as mock_registry, \
-             patch("telegram_adapter.get_config") as mock_config:
+        mock_telegram_server.add_message_update("Hello", topic_id=123)
 
-            mock_reg_instance = MagicMock()
-            mock_reg_instance.find_task_by_topic.return_value = ("test_task", {})
-            mock_registry.return_value = mock_reg_instance
+        messages = []
+        async for msg in telegram_adapter_with_mock.incoming_messages():
+            messages.append(msg)
+            break  # Only get first message
 
-            mock_cfg_instance = MagicMock()
-            mock_cfg_instance.general_topic_id = 1
-            mock_cfg_instance.group_id = -1001234567890
-            mock_cfg_instance.get.return_value = 0
-            mock_cfg_instance.set = MagicMock()
-            mock_cfg_instance.store_topic_mapping = MagicMock()
-            mock_config.return_value = mock_cfg_instance
+        assert len(messages) == 1
+        assert messages[0].text == "Hello"
+        assert messages[0].task_id == "test_task"
 
-            # Add a message to mock server
-            mock_telegram_server.add_message_update("Hello", topic_id=123)
-
-            from telegram_adapter import TelegramAdapter
-            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
-            original_get = adapter._session.get
-
-            def patched_get(url, **kwargs):
-                if "api.telegram.org" in url:
-                    method = url.split("/")[-1]
-                    return requests.post(
-                        f"{mock_telegram_server.base_url}/bot_TOKEN/{method}",
-                        json=kwargs.get("params", {}),
-                    )
-                return original_get(url, **kwargs)
-
-            with patch.object(adapter._session, "get", patched_get):
-                messages = []
-                async for msg in adapter.incoming_messages():
-                    messages.append(msg)
-                    break  # Only get first message
-
-                assert len(messages) == 1
-                assert messages[0].text == "Hello"
-                assert messages[0].task_id == "test_task"
-
-    async def test_incoming_messages_callback(self, mock_telegram_server):
+    async def test_incoming_messages_callback(self, mock_telegram_server, telegram_adapter_with_mock, mock_telegram_config):
         """Test incoming_messages yields callback queries."""
-        with patch("telegram_adapter.get_registry") as mock_registry, \
-             patch("telegram_adapter.get_config") as mock_config, \
-             patch("telegram_adapter.answer_callback") as mock_answer:
+        mock_cfg, mock_reg = mock_telegram_config
+        mock_reg.find_task_by_topic.return_value = None
 
-            mock_reg_instance = MagicMock()
-            mock_reg_instance.find_task_by_topic.return_value = None
-            mock_registry.return_value = mock_reg_instance
-
-            mock_cfg_instance = MagicMock()
-            mock_cfg_instance.general_topic_id = 1
-            mock_cfg_instance.group_id = -1001234567890
-            mock_cfg_instance.get.return_value = 0
-            mock_cfg_instance.set = MagicMock()
-            mock_config.return_value = mock_cfg_instance
-
+        with patch("telegram_adapter.answer_callback") as mock_answer:
             mock_telegram_server.add_callback_update("allow:toolu_123", msg_id=200, topic_id=456)
 
-            from telegram_adapter import TelegramAdapter
-            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
+            messages = []
+            async for msg in telegram_adapter_with_mock.incoming_messages():
+                messages.append(msg)
+                break
 
-            original_get = adapter._session.get
+            assert len(messages) == 1
+            assert messages[0].callback_data == "allow:toolu_123"
+            assert messages[0].text is None
+            mock_answer.assert_called_once()
 
-            def patched_get(url, **kwargs):
-                if "api.telegram.org" in url:
-                    method = url.split("/")[-1]
-                    return requests.post(
-                        f"{mock_telegram_server.base_url}/bot_TOKEN/{method}",
-                        json=kwargs.get("params", {}),
-                    )
-                return original_get(url, **kwargs)
-
-            with patch.object(adapter._session, "get", patched_get):
-                messages = []
-                async for msg in adapter.incoming_messages():
-                    messages.append(msg)
-                    break
-
-                assert len(messages) == 1
-                assert messages[0].callback_data == "allow:toolu_123"
-                assert messages[0].text is None
-                mock_answer.assert_called_once()
-
-    async def test_incoming_messages_forum_topic_created(self, mock_telegram_server):
+    async def test_incoming_messages_forum_topic_created(self, mock_telegram_server, telegram_adapter_with_mock, mock_telegram_config):
         """Test incoming_messages handles forum_topic_created events."""
-        with patch("telegram_adapter.get_registry") as mock_registry, \
-             patch("telegram_adapter.get_config") as mock_config, \
-             patch("telegram_adapter.log"):
+        mock_cfg, mock_reg = mock_telegram_config
+        mock_reg.find_task_by_topic.return_value = None
 
-            mock_reg_instance = MagicMock()
-            mock_reg_instance.find_task_by_topic.return_value = None
-            mock_registry.return_value = mock_reg_instance
+        # Add a forum_topic_created event
+        mock_telegram_server.add_update({
+            "message": {
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": 999,
+                "forum_topic_created": {"name": "New Task"},
+            }
+        })
+        # Add a regular message after
+        mock_telegram_server.add_message_update("After topic", topic_id=123)
 
-            mock_cfg_instance = MagicMock()
-            mock_cfg_instance.general_topic_id = 1
-            mock_cfg_instance.group_id = -1001234567890
-            mock_cfg_instance.get.return_value = 0
-            mock_cfg_instance.set = MagicMock()
-            mock_cfg_instance.store_topic_mapping = MagicMock()
-            mock_config.return_value = mock_cfg_instance
+        messages = []
+        count = 0
+        async for msg in telegram_adapter_with_mock.incoming_messages():
+            messages.append(msg)
+            count += 1
+            if count >= 1:
+                break
 
-            # Add a forum_topic_created event
-            mock_telegram_server.add_update({
-                "message": {
-                    "message_id": 1,
-                    "chat": {"id": -1001234567890},
-                    "message_thread_id": 999,
-                    "forum_topic_created": {"name": "New Task"},
-                }
-            })
-            # Add a regular message after
-            mock_telegram_server.add_message_update("After topic", topic_id=123)
+        # Should have stored topic mapping
+        mock_cfg.store_topic_mapping.assert_called_with(999, "New Task")
+        # Should yield the regular message
+        assert len(messages) == 1
+        assert messages[0].text == "After topic"
 
-            from telegram_adapter import TelegramAdapter
-            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
-            original_get = adapter._session.get
-
-            def patched_get(url, **kwargs):
-                if "api.telegram.org" in url:
-                    method = url.split("/")[-1]
-                    return requests.post(
-                        f"{mock_telegram_server.base_url}/bot_TOKEN/{method}",
-                        json=kwargs.get("params", {}),
-                    )
-                return original_get(url, **kwargs)
-
-            with patch.object(adapter._session, "get", patched_get):
-                messages = []
-                count = 0
-                async for msg in adapter.incoming_messages():
-                    messages.append(msg)
-                    count += 1
-                    if count >= 1:
-                        break
-
-                # Should have stored topic mapping
-                mock_cfg_instance.store_topic_mapping.assert_called_with(999, "New Task")
-                # Should yield the regular message
-                assert len(messages) == 1
-                assert messages[0].text == "After topic"
-
-    async def test_incoming_messages_dm(self, mock_telegram_server):
+    async def test_incoming_messages_dm(self, mock_telegram_server, telegram_adapter_with_mock):
         """Test incoming_messages handles DM messages as operator."""
-        with patch("telegram_adapter.get_registry") as mock_registry, \
-             patch("telegram_adapter.get_config") as mock_config:
+        # Add a DM (private chat) message
+        mock_telegram_server.add_update({
+            "message": {
+                "message_id": 50,
+                "chat": {"id": 12345, "type": "private"},
+                "from": {"id": 12345, "is_bot": False, "first_name": "User"},
+                "text": "DM message",
+            }
+        })
 
-            mock_reg_instance = MagicMock()
-            mock_registry.return_value = mock_reg_instance
+        messages = []
+        async for msg in telegram_adapter_with_mock.incoming_messages():
+            messages.append(msg)
+            break
 
-            mock_cfg_instance = MagicMock()
-            mock_cfg_instance.general_topic_id = 1
-            mock_cfg_instance.group_id = -1001234567890
-            mock_cfg_instance.get.return_value = 0
-            mock_cfg_instance.set = MagicMock()
-            mock_config.return_value = mock_cfg_instance
+        assert len(messages) == 1
+        assert messages[0].text == "DM message"
+        assert messages[0].task_id == "operator"
 
-            # Add a DM (private chat) message
-            mock_telegram_server.add_update({
-                "message": {
-                    "message_id": 50,
-                    "chat": {"id": 12345, "type": "private"},
-                    "from": {"id": 12345, "is_bot": False, "first_name": "User"},
-                    "text": "DM message",
-                }
-            })
-
-            from telegram_adapter import TelegramAdapter
-            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
-            original_get = adapter._session.get
-
-            def patched_get(url, **kwargs):
-                if "api.telegram.org" in url:
-                    method = url.split("/")[-1]
-                    return requests.post(
-                        f"{mock_telegram_server.base_url}/bot_TOKEN/{method}",
-                        json=kwargs.get("params", {}),
-                    )
-                return original_get(url, **kwargs)
-
-            with patch.object(adapter._session, "get", patched_get):
-                messages = []
-                async for msg in adapter.incoming_messages():
-                    messages.append(msg)
-                    break
-
-                assert len(messages) == 1
-                assert messages[0].text == "DM message"
-                assert messages[0].task_id == "operator"
-
-    async def test_incoming_messages_wrong_chat(self, mock_telegram_server):
+    async def test_incoming_messages_wrong_chat(self, mock_telegram_server, telegram_adapter_with_mock, mock_telegram_config):
         """Test incoming_messages ignores messages from wrong chat."""
-        with patch("telegram_adapter.get_registry") as mock_registry, \
-             patch("telegram_adapter.get_config") as mock_config:
+        mock_cfg, mock_reg = mock_telegram_config
+        mock_reg.find_task_by_topic.return_value = None
 
-            mock_reg_instance = MagicMock()
-            mock_reg_instance.find_task_by_topic.return_value = None
-            mock_registry.return_value = mock_reg_instance
+        # Add message from wrong chat
+        mock_telegram_server.add_update({
+            "message": {
+                "message_id": 60,
+                "chat": {"id": -999999999, "type": "supergroup"},
+                "from": {"id": 12345, "is_bot": False, "first_name": "User"},
+                "text": "Wrong chat message",
+            }
+        })
+        # Add a valid message
+        mock_telegram_server.add_message_update("Valid message", topic_id=123)
 
-            mock_cfg_instance = MagicMock()
-            mock_cfg_instance.general_topic_id = 1
-            mock_cfg_instance.group_id = -1001234567890
-            mock_cfg_instance.get.return_value = 0
-            mock_cfg_instance.set = MagicMock()
-            mock_config.return_value = mock_cfg_instance
+        messages = []
+        async for msg in telegram_adapter_with_mock.incoming_messages():
+            messages.append(msg)
+            break
 
-            # Add message from wrong chat
-            mock_telegram_server.add_update({
-                "message": {
-                    "message_id": 60,
-                    "chat": {"id": -999999999, "type": "supergroup"},
-                    "from": {"id": 12345, "is_bot": False, "first_name": "User"},
-                    "text": "Wrong chat message",
-                }
-            })
-            # Add a valid message
-            mock_telegram_server.add_message_update("Valid message", topic_id=123)
+        # Should only get the valid message
+        assert len(messages) == 1
+        assert messages[0].text == "Valid message"
 
-            from telegram_adapter import TelegramAdapter
-            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
-            original_get = adapter._session.get
-
-            def patched_get(url, **kwargs):
-                if "api.telegram.org" in url:
-                    method = url.split("/")[-1]
-                    return requests.post(
-                        f"{mock_telegram_server.base_url}/bot_TOKEN/{method}",
-                        json=kwargs.get("params", {}),
-                    )
-                return original_get(url, **kwargs)
-
-            with patch.object(adapter._session, "get", patched_get):
-                messages = []
-                async for msg in adapter.incoming_messages():
-                    messages.append(msg)
-                    break
-
-                # Should only get the valid message
-                assert len(messages) == 1
-                assert messages[0].text == "Valid message"
-
-    async def test_incoming_messages_no_text(self, mock_telegram_server):
+    async def test_incoming_messages_no_text(self, mock_telegram_server, telegram_adapter_with_mock, mock_telegram_config):
         """Test incoming_messages skips messages without text."""
-        with patch("telegram_adapter.get_registry") as mock_registry, \
-             patch("telegram_adapter.get_config") as mock_config:
+        mock_cfg, mock_reg = mock_telegram_config
+        mock_reg.find_task_by_topic.return_value = None
 
-            mock_reg_instance = MagicMock()
-            mock_reg_instance.find_task_by_topic.return_value = None
-            mock_registry.return_value = mock_reg_instance
+        # Add a message without text (e.g., sticker, photo)
+        mock_telegram_server.add_update({
+            "message": {
+                "message_id": 70,
+                "chat": {"id": -1001234567890, "type": "supergroup"},
+                "from": {"id": 12345, "is_bot": False, "first_name": "User"},
+                "sticker": {"file_id": "abc123"},
+            }
+        })
+        # Add a text message after
+        mock_telegram_server.add_message_update("Text after sticker", topic_id=1)
 
-            mock_cfg_instance = MagicMock()
-            mock_cfg_instance.general_topic_id = 1
-            mock_cfg_instance.group_id = -1001234567890
-            mock_cfg_instance.get.return_value = 0
-            mock_cfg_instance.set = MagicMock()
-            mock_config.return_value = mock_cfg_instance
+        messages = []
+        async for msg in telegram_adapter_with_mock.incoming_messages():
+            messages.append(msg)
+            break
 
-            # Add a message without text (e.g., sticker, photo)
-            mock_telegram_server.add_update({
-                "message": {
-                    "message_id": 70,
-                    "chat": {"id": -1001234567890, "type": "supergroup"},
-                    "from": {"id": 12345, "is_bot": False, "first_name": "User"},
-                    "sticker": {"file_id": "abc123"},
-                }
-            })
-            # Add a text message after
-            mock_telegram_server.add_message_update("Text after sticker", topic_id=1)
+        # Should only get the text message
+        assert len(messages) == 1
+        assert messages[0].text == "Text after sticker"
 
-            from telegram_adapter import TelegramAdapter
-            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
-            original_get = adapter._session.get
-
-            def patched_get(url, **kwargs):
-                if "api.telegram.org" in url:
-                    method = url.split("/")[-1]
-                    return requests.post(
-                        f"{mock_telegram_server.base_url}/bot_TOKEN/{method}",
-                        json=kwargs.get("params", {}),
-                    )
-                return original_get(url, **kwargs)
-
-            with patch.object(adapter._session, "get", patched_get):
-                messages = []
-                async for msg in adapter.incoming_messages():
-                    messages.append(msg)
-                    break
-
-                # Should only get the text message
-                assert len(messages) == 1
-                assert messages[0].text == "Text after sticker"
-
-    async def test_incoming_messages_request_error(self, mock_telegram_server):
+    async def test_incoming_messages_request_error(self, mock_telegram_config):
         """Test incoming_messages handles request errors gracefully."""
-        with patch("telegram_adapter.get_registry") as mock_registry, \
-             patch("telegram_adapter.get_config") as mock_config, \
-             patch("telegram_adapter.log") as mock_log:
+        from telegram_adapter import TelegramAdapter
+        adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
 
-            mock_reg_instance = MagicMock()
-            mock_registry.return_value = mock_reg_instance
+        call_count = [0]
 
-            mock_cfg_instance = MagicMock()
-            mock_cfg_instance.general_topic_id = 1
-            mock_cfg_instance.group_id = -1001234567890
-            mock_cfg_instance.get.return_value = 0
-            mock_cfg_instance.set = MagicMock()
-            mock_config.return_value = mock_cfg_instance
+        def failing_get(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] <= 1:
+                raise requests.exceptions.ConnectionError("Network error")
+            # Return empty updates on subsequent calls
+            mock_resp = MagicMock()
+            mock_resp.ok = True
+            mock_resp.json.return_value = {"ok": True, "result": []}
+            return mock_resp
 
-            from telegram_adapter import TelegramAdapter
-            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
-            call_count = [0]
-
-            def failing_get(url, **kwargs):
-                call_count[0] += 1
-                if call_count[0] <= 1:
-                    raise requests.exceptions.ConnectionError("Network error")
-                # Return empty updates on subsequent calls
-                mock_resp = MagicMock()
-                mock_resp.ok = True
-                mock_resp.json.return_value = {"ok": True, "result": []}
-                return mock_resp
-
-            with patch.object(adapter._session, "get", failing_get):
-                # Run for a short time to test error handling
-                async def run_with_timeout():
-                    async for msg in adapter.incoming_messages():
-                        return msg
-
-                try:
-                    await asyncio.wait_for(run_with_timeout(), timeout=0.2)
-                except asyncio.TimeoutError:
-                    pass  # Expected
-
-                # Should have logged the error
-                assert call_count[0] >= 1
-
-    async def test_incoming_messages_reply_to(self, mock_telegram_server):
-        """Test incoming_messages parses reply_to_message."""
-        with patch("telegram_adapter.get_registry") as mock_registry, \
-             patch("telegram_adapter.get_config") as mock_config:
-
-            mock_reg_instance = MagicMock()
-            mock_reg_instance.find_task_by_topic.return_value = ("task", {})
-            mock_registry.return_value = mock_reg_instance
-
-            mock_cfg_instance = MagicMock()
-            mock_cfg_instance.general_topic_id = 1
-            mock_cfg_instance.group_id = -1001234567890
-            mock_cfg_instance.get.return_value = 0
-            mock_cfg_instance.set = MagicMock()
-            mock_config.return_value = mock_cfg_instance
-
-            # Add a message with reply
-            mock_telegram_server.add_update({
-                "message": {
-                    "message_id": 80,
-                    "chat": {"id": -1001234567890, "type": "supergroup"},
-                    "message_thread_id": 123,
-                    "from": {"id": 12345, "is_bot": False, "first_name": "User"},
-                    "text": "Reply message",
-                    "reply_to_message": {"message_id": 50},
-                }
-            })
-
-            from telegram_adapter import TelegramAdapter
-            adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-
-            original_get = adapter._session.get
-
-            def patched_get(url, **kwargs):
-                if "api.telegram.org" in url:
-                    method = url.split("/")[-1]
-                    return requests.post(
-                        f"{mock_telegram_server.base_url}/bot_TOKEN/{method}",
-                        json=kwargs.get("params", {}),
-                    )
-                return original_get(url, **kwargs)
-
-            with patch.object(adapter._session, "get", patched_get):
-                messages = []
+        with patch.object(adapter._session, "get", failing_get):
+            # Run for a short time to test error handling
+            async def run_with_timeout():
                 async for msg in adapter.incoming_messages():
-                    messages.append(msg)
-                    break
+                    return msg
 
-                assert len(messages) == 1
-                assert messages[0].reply_to_msg_id == "50"
+            try:
+                await asyncio.wait_for(run_with_timeout(), timeout=0.2)
+            except asyncio.TimeoutError:
+                pass  # Expected
+
+            # Should have logged the error
+            assert call_count[0] >= 1
+
+    async def test_incoming_messages_reply_to(self, mock_telegram_server, telegram_adapter_with_mock, mock_telegram_config):
+        """Test incoming_messages parses reply_to_message."""
+        mock_cfg, mock_reg = mock_telegram_config
+        mock_reg.find_task_by_topic.return_value = ("task", {})
+
+        # Add a message with reply
+        mock_telegram_server.add_update({
+            "message": {
+                "message_id": 80,
+                "chat": {"id": -1001234567890, "type": "supergroup"},
+                "message_thread_id": 123,
+                "from": {"id": 12345, "is_bot": False, "first_name": "User"},
+                "text": "Reply message",
+                "reply_to_message": {"message_id": 50},
+            }
+        })
+
+        messages = []
+        async for msg in telegram_adapter_with_mock.incoming_messages():
+            messages.append(msg)
+            break
+
+        assert len(messages) == 1
+        assert messages[0].reply_to_msg_id == "50"
