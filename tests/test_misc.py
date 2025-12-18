@@ -58,7 +58,7 @@ class TestDaemonHelpers:
         pid_file.write_text("12345")
 
         with patch("daemon.PID_FILE", pid_file):
-            from daemon import cleanup_pid_file
+            from telegram_daemon import cleanup_pid_file
             cleanup_pid_file()
             assert not pid_file.exists()
 
