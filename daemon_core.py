@@ -283,7 +283,8 @@ class Daemon:
                                 "text": msg.text,
                                 "message_id": int(msg.msg_id),
                                 "chat": {"id": int(self.chat_id)},
-                                "message_thread_id": self._get_topic_id_for_task(msg.task_id)
+                                "message_thread_id": self._get_topic_id_for_task(msg.task_id),
+                                "reply_to_message": msg.reply_to_message
                             }
                             handled = self.command_handler.handle_command(tg_msg)
                             if handled:

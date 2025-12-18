@@ -349,7 +349,8 @@ class TelegramAdapter(FrontendAdapter):
         msg_id = str(msg.get("message_id"))
         chat_id = str(msg.get("chat", {}).get("id"))
         topic_id = msg.get("message_thread_id")
-        reply_to = msg.get("reply_to_message", {}).get("message_id")
+        reply_to_message = msg.get("reply_to_message")
+        reply_to = reply_to_message.get("message_id") if reply_to_message else None
 
         # Ignore messages from wrong chat
         is_dm = msg.get("chat", {}).get("type") == "private"
@@ -369,7 +370,8 @@ class TelegramAdapter(FrontendAdapter):
             text=text,
             callback_data=None,
             msg_id=msg_id,
-            reply_to_msg_id=str(reply_to) if reply_to else None
+            reply_to_msg_id=str(reply_to) if reply_to else None,
+            reply_to_message=reply_to_message
         )
 
     def _parse_callback(self, callback: dict) -> IncomingMessage:

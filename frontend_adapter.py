@@ -18,12 +18,14 @@ class IncomingMessage:
         callback_data: Button callback data (None for text-only messages)
         msg_id: Frontend message ID (for tracking state)
         reply_to_msg_id: Message ID this is replying to (None if not a reply)
+        reply_to_message: Full reply-to message dict (for /debug command)
     """
     task_id: str
     text: str | None
     callback_data: str | None
     msg_id: str
     reply_to_msg_id: str | None
+    reply_to_message: dict | None = None
 
 
 class FrontendAdapter(ABC):
