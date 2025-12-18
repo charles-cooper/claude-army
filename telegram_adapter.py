@@ -351,9 +351,8 @@ class TelegramAdapter(FrontendAdapter):
         reply_to = msg.get("reply_to_message", {}).get("message_id")
 
         # Ignore messages from wrong chat
-        config = get_config()
         is_dm = msg.get("chat", {}).get("type") == "private"
-        is_group = chat_id == str(config.group_id)
+        is_group = chat_id == self._get_group_chat_id()
 
         if not is_dm and not is_group:
             return None
