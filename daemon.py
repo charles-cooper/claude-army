@@ -64,7 +64,7 @@ class Daemon:
         self.process_manager = ProcessManager()
         self.permission_manager = PermissionManager()
         self.telegram = TelegramAdapter(bot_token, chat_id)
-        self.command_handler = CommandHandler(bot_token, chat_id, {})  # State not needed for new arch
+        self.command_handler = CommandHandler(bot_token, chat_id, {}, self.process_manager)
 
         # Task group for concurrent tasks
         self._running = False
