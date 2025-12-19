@@ -553,10 +553,12 @@ class TestProcessPermissionRequest:
              patch("daemon_core.send_permission_notification") as mock_send:
             await daemon._process_permission_request("toolu_process_test", "session-123")
 
+            # Uses telegram._get_group_chat_id() which returns config.group_id or chat_id
+            expected_chat_id = daemon.telegram._get_group_chat_id()
             mock_send.assert_called_once_with(
                 daemon.permission_manager,
                 "test_token",
-                "123456789",
+                expected_chat_id,
                 12345,
                 "toolu_process_test"
             )

@@ -340,7 +340,7 @@ class Daemon:
         success = send_permission_notification(
             self.permission_manager,
             self.bot_token,
-            self.chat_id,
+            self.telegram._get_group_chat_id(),
             topic_id,
             tool_use_id
         )

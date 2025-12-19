@@ -226,10 +226,13 @@ class PermissionHTTPHandler(BaseHTTPRequestHandler):
                 "reason": reason
             }
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(response).encode())
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(response).encode())
+            except BrokenPipeError:
+                log("Client disconnected before response could be sent")
 
         except Exception as e:
             log(f"HTTP handler error: {e}")
