@@ -282,7 +282,7 @@ class CommandHandler:
         if task_name and task_data and not is_general:
             path = task_data.get("path")
             if path and append_todo(path, todo_text):
-                self._reply(chat_id, msg_id, "✅ Added to .agent-files/TODO.local.md")
+                self._reply(chat_id, msg_id, "✅ Added to .agent-files/TODO.md")
                 log(f"  /todo added to {task_name}: {todo_text[:50]}...")
             else:
                 self._reply(chat_id, msg_id, "Failed to add todo")

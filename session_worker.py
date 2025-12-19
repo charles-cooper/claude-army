@@ -87,12 +87,12 @@ def create_claude_local_md(directory: str, task_name: str, description: str = ""
 
 
 def append_todo(directory: str, item: str) -> bool:
-    """Append a todo item to .agent-files/TODO.local.md in the task directory.
+    """Append a todo item to .agent-files/TODO.md in the task directory.
 
     Creates the directory and file with header if they don't exist.
     Returns True on success, False on failure.
     """
-    path = Path(directory) / ".agent-files" / "TODO.local.md"
+    path = Path(directory) / ".agent-files" / "TODO.md"
     try:
         path.parent.mkdir(exist_ok=True)
         if not path.exists():
