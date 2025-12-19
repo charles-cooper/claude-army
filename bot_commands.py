@@ -5,7 +5,7 @@ import datetime
 import json
 
 from telegram_utils import (
-    State, send_reply, send_chat_action, log, is_forum_enabled
+    State, send_reply, send_chat_action, log, is_forum_enabled, escape_markdown_v1
 )
 from registry import get_config, get_registry, rebuild_registry_from_markers
 from session_operator import start_operator_session, send_to_operator
@@ -144,16 +144,17 @@ def build_operator_intervention_prompt(task_name: str, task_data: dict, pane_out
 class CommandHandler:
     """Handles bot commands like /debug, /todo, /setup."""
 
-    def __init__(self, bot_token: str, chat_id: str, state: State, process_manager=None):
+    def __init__(self, bot_token: str, chat_id: str, state: State, process_manager=None, permission_manager=None):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.state = state
-        self.process_manager = process_manager  # Optional ProcessManager for new architecture
+        self.process_manager = process_manager
+        self.permission_manager = permission_manager
 
-    def _reply(self, chat_id: str, msg_id: int, text: str, parse_mode: str = "Markdown"):
+    def _reply(self, chat_id: str, msg_id: int, text: str, parse_mode: str = "Markdown", topic_id: int = None):
         """Send a reply to a message."""
         log(f"_reply: chat_id={chat_id}, msg_id={msg_id}, text={text}")
-        send_reply(self.bot_token, chat_id, msg_id, text, parse_mode)
+        send_reply(self.bot_token, chat_id, msg_id, text, parse_mode, topic_id)
 
     def _typing(self, chat_id: str, topic_id: int = None):
         """Show typing indicator."""
@@ -339,19 +340,41 @@ class CommandHandler:
         lines.append(f"From: {reply_from.get('first_name', '?')} (id={reply_from.get('id', '?')})")
         lines.append(f"Date: {reply_to.get('date', '?')}")
 
-        # Text preview
+        # Text preview (escape markdown chars to prevent parse errors)
         reply_text = reply_to.get("text", "")
         if reply_text:
             preview = reply_text[:100] + "..." if len(reply_text) > 100 else reply_text
-            lines.append(f"Text: {preview}")
+            lines.append(f"Text: {escape_markdown_v1(preview)}")
 
-        # State info
+        # Check legacy state tracking
+        has_state = False
         if reply_str in self.state:
             entry = self.state.get(reply_str)
             lines.append("")
             lines.append("*State:*")
             lines.append(f"```\n{json.dumps(entry, indent=2)}\n```")
-        else:
+            has_state = True
+
+        # Check permission state
+        if self.permission_manager:
+            tool_use_id = self.permission_manager._msg_to_tool.get(reply_to_id)
+            if tool_use_id:
+                pending = self.permission_manager.get_pending(tool_use_id)
+                if pending:
+                    lines.append("")
+                    lines.append("*Permission (pending):*")
+                    lines.append(f"Tool: `{pending.tool_name}`")
+                    lines.append(f"Session: `{pending.session_id[:12]}...`")
+                    lines.append(f"CWD: `{pending.cwd}`")
+                    has_state = True
+
+        # Detect resolved permission messages by format
+        if not has_state and reply_text.startswith("Claude is asking permission"):
+            lines.append("")
+            lines.append("_Permission already resolved (state cleaned up)_")
+            has_state = True
+
+        if not has_state:
             lines.append("\n_No state tracked for this message_")
 
         self._reply(chat_id, msg_id, "\n".join(lines))

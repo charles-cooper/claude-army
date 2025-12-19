@@ -95,6 +95,13 @@ def strip_home(path: str) -> str:
     return path.removeprefix(str(Path.home()) + "/")
 
 
+def escape_markdown_v1(text: str) -> str:
+    """Escape MarkdownV1 special chars in plain text."""
+    for char in ['\\', '_', '*', '`', '[']:
+        text = text.replace(char, '\\' + char)
+    return text
+
+
 def escape_markdown_v2(text: str) -> str:
     """Escape ALL MarkdownV2 special chars in plain text.
 
@@ -199,15 +206,28 @@ def answer_callback(bot_token: str, callback_id: str, text: str = None):
     )
 
 
-def send_reply(bot_token: str, chat_id: str, reply_to_msg_id: int, text: str, parse_mode: str = None):
+def send_reply(bot_token: str, chat_id: str, reply_to_msg_id: int, text: str, parse_mode: str = None, topic_id: int = None):
     """Send a reply message on Telegram."""
     payload = {"chat_id": chat_id, "text": text, "reply_to_message_id": reply_to_msg_id}
     if parse_mode:
         payload["parse_mode"] = parse_mode
-    requests.post(
+    if topic_id:
+        payload["message_thread_id"] = topic_id
+    resp = requests.post(
         f"https://api.telegram.org/bot{bot_token}/sendMessage",
         json=payload
     )
+    # Retry without parse_mode on markdown errors
+    if resp.status_code == 400 and parse_mode and "can't parse entities" in resp.text:
+        log(f"send_reply: Markdown parse error, retrying without parse_mode")
+        del payload["parse_mode"]
+        resp = requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json=payload
+        )
+    if not resp.ok:
+        log(f"send_reply error: {resp.status_code} {resp.text[:200]}")
+    return resp.ok
 
 
 def update_message_buttons(bot_token: str, chat_id: str, msg_id: int, label: str):
