@@ -280,6 +280,7 @@ class Daemon:
                             topic_id = reply_msg.get("message_thread_id", "?")
                             if reply_text:
                                 text = f"[Replying to msg_id={reply_msg_id} topic={topic_id} from={reply_from}]\n{reply_text}\n\n[msg_id={msg.msg_id}]\n{msg.text}"
+                        await self.telegram.show_typing(msg.task_id)
                         await self._route_message_to_claude(msg.task_id, text)
 
                 except Exception as e:

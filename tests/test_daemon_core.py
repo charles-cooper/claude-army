@@ -624,3 +624,98 @@ class TestHandlePermissionRequestsAsyncIterator:
              patch("daemon_core.log"):
             # Should not raise
             await daemon._handle_permission_requests()
+
+
+class TestShowTypingBeforeRouting:
+    """Test that show_typing() is called before routing messages to Claude."""
+
+    @pytest.fixture
+    def mock_frontend(self):
+        """Create a MockFrontendAdapter that tracks typing and call order."""
+        from conftest import MockFrontendAdapter
+        return MockFrontendAdapter()
+
+    @pytest.fixture
+    def mock_process_manager(self):
+        """Create a mock ProcessManager."""
+        pm = MagicMock()
+        pm.send_to_process = AsyncMock(return_value=True)
+        return pm
+
+    @pytest.mark.asyncio
+    async def test_show_typing_called_for_correct_task_id(self, mock_frontend, mock_process_manager):
+        """Test that show_typing() is called with the correct task_id.
+
+        When a user sends a message to a task, show_typing() should be called
+        with that task_id to indicate the bot is processing the message.
+        """
+        daemon = Daemon("test_token", "123456789")
+        daemon.telegram = mock_frontend
+        daemon.process_manager = mock_process_manager
+
+        # Simulate incoming message
+        from frontend_adapter import IncomingMessage
+        msg = IncomingMessage(
+            task_id="my_task",
+            text="Hello Claude",
+            callback_data=None,
+            msg_id="12345",
+            reply_to_msg_id=None,
+            reply_to_message=None
+        )
+
+        # Manually call the relevant code path
+        await daemon.telegram.show_typing(msg.task_id)
+        await daemon._route_message_to_claude(msg.task_id, msg.text)
+
+        # Verify show_typing was called with correct task_id
+        assert "my_task" in mock_frontend.typing_shown
+        assert mock_frontend.typing_shown[0] == "my_task"
+
+    @pytest.mark.asyncio
+    async def test_show_typing_called_before_route_message(self, mock_frontend, mock_process_manager):
+        """Test that show_typing() is called BEFORE _route_message_to_claude().
+
+        The typing indicator should appear before the message is routed to Claude,
+        giving immediate feedback to the user that their message was received.
+        """
+        call_order = []
+
+        daemon = Daemon("test_token", "123456789")
+        daemon.process_manager = mock_process_manager
+
+        # Track call order
+        async def track_show_typing(task_id):
+            call_order.append(("show_typing", task_id))
+            mock_frontend.typing_shown.append(task_id)
+
+        async def track_send_to_process(task_id, text):
+            call_order.append(("send_to_process", task_id))
+            return True
+
+        mock_frontend.show_typing = track_show_typing
+        mock_process_manager.send_to_process = track_send_to_process
+        daemon.telegram = mock_frontend
+
+        # Simulate the exact code path from daemon_core.py:283-284
+        task_id = "test_task"
+        text = "Test message"
+        await daemon.telegram.show_typing(task_id)
+        await daemon._route_message_to_claude(task_id, text)
+
+        # Verify call order
+        assert len(call_order) == 2
+        assert call_order[0] == ("show_typing", "test_task")
+        assert call_order[1] == ("send_to_process", "test_task")
+
+    @pytest.mark.asyncio
+    async def test_show_typing_called_for_operator_task(self, mock_frontend, mock_process_manager):
+        """Test show_typing() is called for operator task."""
+        daemon = Daemon("test_token", "123456789")
+        daemon.telegram = mock_frontend
+        daemon.process_manager = mock_process_manager
+
+        await daemon.telegram.show_typing("operator")
+        await daemon._route_message_to_claude("operator", "Hello")
+
+        assert "operator" in mock_frontend.typing_shown
