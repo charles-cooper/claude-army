@@ -19,7 +19,6 @@ This is a Telegram integration for Claude Code that watches transcripts and send
 **Main components:**
 - `telegram-daemon.py` - Main daemon, orchestrates everything
 - `transcript_watcher.py` - Watches transcript files for tool_use and compaction events
-- `telegram_poller.py` - Handles Telegram callbacks and messages
 - `telegram_utils.py` - Shared utilities (formatting, state, API)
 
 ## Code Style

@@ -28,7 +28,7 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [tool.coverage.run]
-omit = ["daemon.py", "bot_commands.py", "telegram-daemon.py", "telegram_poller.py", "session_operator.py", "session_worker.py"]
+omit = ["daemon.py", "bot_commands.py", "telegram-daemon.py", "session_operator.py", "session_worker.py"]
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:", "pass$"]

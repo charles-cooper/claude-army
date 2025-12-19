@@ -38,7 +38,6 @@ Claude Army is a multi-instance task management system with Telegram integration
 **Components:**
 - `telegram-daemon.py` - Main daemon, orchestrates transcript watching and Telegram polling
 - `transcript_watcher.py` - Watches transcript files for tool_use and compaction events
-- `telegram_poller.py` - Handles Telegram updates (callbacks, messages)
 - `telegram_utils.py` - Shared utilities (formatting, state, API calls)
 - `registry.py` - Task registry and configuration management
 - `session_operator.py` - Operator Claude session management
