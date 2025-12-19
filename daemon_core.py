@@ -11,7 +11,6 @@ Threading model:
 
 Shutdown:
 - Signal received (SIGINT/SIGTERM) -> immediate os._exit(0)
-- Process group cleanup via atexit ensures child processes are terminated
 - PID file cleaned up via atexit
 """
 
@@ -19,30 +18,9 @@ import asyncio
 import atexit
 import json
 import os
-import signal
 import sys
 import threading
 from pathlib import Path
-
-
-def _setup_process_group():
-    """Setup process group and atexit cleanup for orphan handling.
-
-    Creates a new process group so all children can be killed together.
-    Registers atexit handler to terminate process group on exit.
-    """
-    try:
-        os.setpgrp()
-    except OSError:
-        pass  # May fail if already group leader
-
-    def cleanup_process_group():
-        try:
-            os.killpg(os.getpgid(0), signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
-
-    atexit.register(cleanup_process_group)
 
 from telegram_utils import log, escape_markdown_v2
 from registry import get_config, get_registry
@@ -108,7 +86,7 @@ class Daemon:
         self.process_manager = ProcessManager()
         self.permission_manager = PermissionManager()
         self.telegram = TelegramAdapter(bot_token, chat_id)
-        self.command_handler = CommandHandler(bot_token, chat_id, {}, self.process_manager)
+        self.command_handler = CommandHandler(bot_token, chat_id, {}, self.process_manager, self.permission_manager)
 
         self._running = False
 
@@ -131,11 +109,6 @@ class Daemon:
 
         # Spawn operator process on startup
         await self._spawn_operator()
-
-        # Setup signal handlers - just exit immediately
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, self.shutdown)
 
         log("Daemon started successfully")
 
@@ -470,15 +443,6 @@ class Daemon:
 
         return None
 
-    def shutdown(self) -> None:
-        """Immediate shutdown. No graceful cleanup needed - OS handles it."""
-        try:
-            print("\nShutting down...", flush=True)
-        except BrokenPipeError:
-            pass
-        cleanup_pid_file()
-        os._exit(0)
-
 
 async def main(config_file: Path = DEFAULT_CONFIG_FILE, pid_file: Path = DEFAULT_PID_FILE) -> int:
     """Main entry point.
@@ -490,9 +454,6 @@ async def main(config_file: Path = DEFAULT_CONFIG_FILE, pid_file: Path = DEFAULT
     Returns:
         Exit code (0 for success, 1 for error).
     """
-    # Setup process group for orphan handling
-    _setup_process_group()
-
     try:
         check_singleton(pid_file)
     except DaemonAlreadyRunning as e:
