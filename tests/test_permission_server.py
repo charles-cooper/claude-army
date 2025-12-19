@@ -686,3 +686,116 @@ class TestEdgeCasesPermission:
             assert decision == "deny"
 
 
+class TestPermissionManagerAsyncIterator:
+    """Test PermissionManager async iterator functionality."""
+
+    @pytest.mark.asyncio
+    async def test_pending_notifications_yields_on_signal(self, permission_manager):
+        """Test pending_notifications yields when _signal_new_request is called."""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        permission_manager.set_event_loop(loop)
+
+        # Queue an item directly
+        permission_manager._notification_queue.put_nowait(("toolu_123", "session_abc"))
+
+        # Get the first item from the iterator
+        async for tool_use_id, session_id in permission_manager.pending_notifications():
+            assert tool_use_id == "toolu_123"
+            assert session_id == "session_abc"
+            break  # Exit after first item
+
+    @pytest.mark.asyncio
+    async def test_pending_notifications_stops_on_none(self, permission_manager):
+        """Test pending_notifications stops when None (shutdown sentinel) is received."""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        permission_manager.set_event_loop(loop)
+
+        # Queue shutdown sentinel
+        permission_manager._notification_queue.put_nowait(None)
+
+        items = []
+        async for item in permission_manager.pending_notifications():
+            items.append(item)
+
+        # Should have no items (stopped on None)
+        assert items == []
+
+    @pytest.mark.asyncio
+    async def test_signal_new_request_queues_notification(self, permission_manager):
+        """Test _signal_new_request adds to notification queue."""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        permission_manager.set_event_loop(loop)
+
+        # Signal a new request
+        permission_manager._signal_new_request("toolu_xyz", "session_123")
+
+        # Check queue has the item
+        item = await asyncio.wait_for(
+            permission_manager._notification_queue.get(),
+            timeout=1.0
+        )
+        assert item == ("toolu_xyz", "session_123")
+
+    @pytest.mark.asyncio
+    async def test_signal_new_request_noop_without_loop(self, permission_manager):
+        """Test _signal_new_request does nothing if loop not set."""
+        assert permission_manager._loop is None
+
+        # Should not raise
+        permission_manager._signal_new_request("toolu_abc", "session_xyz")
+
+        # Queue should be empty
+        assert permission_manager._notification_queue.empty()
+
+    def test_set_event_loop_stores_loop(self, permission_manager):
+        """Test set_event_loop stores the loop."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        try:
+            permission_manager.set_event_loop(loop)
+            assert permission_manager._loop is loop
+        finally:
+            loop.close()
+
+    @pytest.mark.asyncio
+    async def test_request_permission_signals_new_request(self, permission_manager):
+        """Test request_permission calls _signal_new_request for interactive tools."""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        permission_manager.set_event_loop(loop)
+
+        result_queue = queue.Queue()
+
+        def request_thread():
+            decision, reason = permission_manager.request_permission(
+                tool_name="Bash",
+                tool_input={"command": "ls"},
+                tool_use_id="toolu_signal_test",
+                session_id="session_signal",
+                cwd="/tmp",
+            )
+            result_queue.put((decision, reason))
+
+        thread = threading.Thread(target=request_thread)
+        thread.start()
+
+        # Wait for signal to arrive in queue
+        item = await asyncio.wait_for(
+            permission_manager._notification_queue.get(),
+            timeout=2.0
+        )
+        assert item == ("toolu_signal_test", "session_signal")
+
+        # Respond to unblock the thread
+        permission_manager.respond("toolu_signal_test", "allow", "test")
+        thread.join(timeout=1.0)
+
+

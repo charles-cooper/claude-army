@@ -4,12 +4,13 @@ Manages permission requests from hooks, integrates with Telegram callbacks.
 Thread-safe HTTP server that blocks hook requests until user responds.
 """
 
+import asyncio
 import json
 import queue
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Literal
+from typing import AsyncIterator, Literal
 
 from telegram_utils import (
     format_tool_permission, send_to_topic, answer_callback,
@@ -45,6 +46,29 @@ class PermissionManager:
         self._lock = threading.Lock()
         # Map Telegram msg_id -> tool_use_id for callback routing
         self._msg_to_tool: dict[int, str] = {}
+        # Async notification queue for permission requests
+        self._notification_queue: asyncio.Queue = asyncio.Queue()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Set asyncio loop for cross-thread signaling."""
+        self._loop = loop
+
+    def _signal_new_request(self, tool_use_id: str, session_id: str) -> None:
+        """Signal asyncio loop about new request (called from HTTP thread)."""
+        if self._loop and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(
+                self._notification_queue.put_nowait,
+                (tool_use_id, session_id)
+            )
+
+    async def pending_notifications(self) -> AsyncIterator[tuple[str, str]]:
+        """Yields (tool_use_id, session_id) for permissions needing notification."""
+        while True:
+            item = await self._notification_queue.get()
+            if item is None:  # shutdown sentinel
+                break
+            yield item
 
     def request_permission(
         self,
@@ -77,6 +101,9 @@ class PermissionManager:
             self.pending[tool_use_id] = pending
 
         log(f"Permission requested: {tool_name} ({tool_use_id[:20]}...)")
+
+        # Signal async loop about new request
+        self._signal_new_request(tool_use_id, session_id)
 
         # Block until response (or timeout)
         try:

@@ -243,6 +243,14 @@ class Registry(ReloadableJSON):
                 return (name, task_data)
         return None
 
+    def get_topic_for_session(self, session_id: str) -> int | None:
+        """Get topic_id for a session. Returns None if not found."""
+        self._maybe_reload()
+        for task_data in self._data.get("tasks", {}).values():
+            if task_data.get("session_id") == session_id:
+                return task_data.get("topic_id")
+        return None
+
     def clear(self):
         """Clear all registry data."""
         self._cache = {"tasks": {}}

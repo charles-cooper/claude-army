@@ -523,3 +523,180 @@ class TestOnSystemInit:
         log_message = mock_log.call_args[0][0]
         assert "test_task" in log_message
         assert "session-xyz789" in log_message
+
+
+class TestProcessPermissionRequest:
+    """Test _process_permission_request method."""
+
+    @pytest.mark.asyncio
+    async def test_process_permission_request_sends_notification(self):
+        """Test _process_permission_request sends Telegram notification."""
+        from permission_server import PendingPermission
+
+        daemon = Daemon("test_token", "123456789")
+
+        # Setup mock registry
+        mock_registry = MagicMock()
+        mock_registry.get_topic_for_session = MagicMock(return_value=12345)
+
+        # Add pending permission
+        pending = PendingPermission(
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            tool_use_id="toolu_process_test",
+            session_id="session-123",
+            cwd="/tmp"
+        )
+        daemon.permission_manager.pending["toolu_process_test"] = pending
+
+        with patch("daemon_core.get_registry", return_value=mock_registry), \
+             patch("daemon_core.send_permission_notification") as mock_send:
+            await daemon._process_permission_request("toolu_process_test", "session-123")
+
+            mock_send.assert_called_once_with(
+                daemon.permission_manager,
+                "test_token",
+                "123456789",
+                12345,
+                "toolu_process_test"
+            )
+
+    @pytest.mark.asyncio
+    async def test_process_permission_request_skips_if_no_topic(self):
+        """Test _process_permission_request skips if no topic found."""
+        from permission_server import PendingPermission
+
+        daemon = Daemon("test_token", "123456789")
+
+        # Setup mock registry that returns no topic
+        mock_registry = MagicMock()
+        mock_registry.get_topic_for_session = MagicMock(return_value=None)
+
+        # Add pending permission
+        pending = PendingPermission(
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            tool_use_id="toolu_no_topic",
+            session_id="unknown-session",
+            cwd="/tmp"
+        )
+        daemon.permission_manager.pending["toolu_no_topic"] = pending
+
+        with patch("daemon_core.get_registry", return_value=mock_registry), \
+             patch("daemon_core.send_permission_notification") as mock_send, \
+             patch("daemon_core.log"):
+            await daemon._process_permission_request("toolu_no_topic", "unknown-session")
+
+            # Should not send notification
+            mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_permission_request_skips_if_already_resolved(self):
+        """Test _process_permission_request skips if permission already resolved."""
+        daemon = Daemon("test_token", "123456789")
+
+        # Setup mock registry
+        mock_registry = MagicMock()
+        mock_registry.get_topic_for_session = MagicMock(return_value=12345)
+
+        # No pending permission (already resolved)
+        with patch("daemon_core.get_registry", return_value=mock_registry), \
+             patch("daemon_core.send_permission_notification") as mock_send:
+            await daemon._process_permission_request("toolu_resolved", "session-123")
+
+            # Should not send notification
+            mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_permission_request_skips_if_already_notified(self):
+        """Test _process_permission_request skips if already notified."""
+        from permission_server import PendingPermission
+
+        daemon = Daemon("test_token", "123456789")
+
+        # Setup mock registry
+        mock_registry = MagicMock()
+        mock_registry.get_topic_for_session = MagicMock(return_value=12345)
+
+        # Add pending permission with telegram_msg_id already set
+        pending = PendingPermission(
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            tool_use_id="toolu_already_notified",
+            session_id="session-123",
+            cwd="/tmp"
+        )
+        pending.telegram_msg_id = 999  # Already notified
+        daemon.permission_manager.pending["toolu_already_notified"] = pending
+
+        with patch("daemon_core.get_registry", return_value=mock_registry), \
+             patch("daemon_core.send_permission_notification") as mock_send:
+            await daemon._process_permission_request("toolu_already_notified", "session-123")
+
+            # Should not send notification again
+            mock_send.assert_not_called()
+
+
+class TestHandlePermissionRequestsAsyncIterator:
+    """Test _handle_permission_requests with async iterator."""
+
+    @pytest.mark.asyncio
+    async def test_handle_permission_requests_processes_queue(self):
+        """Test _handle_permission_requests processes items from queue."""
+        import asyncio
+        from permission_server import PendingPermission
+
+        daemon = Daemon("test_token", "123456789")
+        loop = asyncio.get_running_loop()
+        daemon.permission_manager.set_event_loop(loop)
+
+        # Setup mock registry
+        mock_registry = MagicMock()
+        mock_registry.get_topic_for_session = MagicMock(return_value=12345)
+
+        # Add pending permission
+        pending = PendingPermission(
+            tool_name="Bash",
+            tool_input={"command": "test"},
+            tool_use_id="toolu_queue_test",
+            session_id="session-queue",
+            cwd="/tmp"
+        )
+        daemon.permission_manager.pending["toolu_queue_test"] = pending
+
+        # Queue the notification
+        daemon.permission_manager._notification_queue.put_nowait(
+            ("toolu_queue_test", "session-queue")
+        )
+        # Queue shutdown sentinel
+        daemon.permission_manager._notification_queue.put_nowait(None)
+
+        with patch("daemon_core.get_registry", return_value=mock_registry), \
+             patch("daemon_core.send_permission_notification") as mock_send:
+            await daemon._handle_permission_requests()
+
+            mock_send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_permission_requests_handles_exceptions(self):
+        """Test _handle_permission_requests continues on exception."""
+        import asyncio
+
+        daemon = Daemon("test_token", "123456789")
+        loop = asyncio.get_running_loop()
+        daemon.permission_manager.set_event_loop(loop)
+
+        # Queue items
+        daemon.permission_manager._notification_queue.put_nowait(
+            ("toolu_error", "session-error")
+        )
+        daemon.permission_manager._notification_queue.put_nowait(None)
+
+        # Mock registry to raise exception
+        mock_registry = MagicMock()
+        mock_registry.get_topic_for_session = MagicMock(side_effect=Exception("Test error"))
+
+        with patch("daemon_core.get_registry", return_value=mock_registry), \
+             patch("daemon_core.log"):
+            # Should not raise
+            await daemon._handle_permission_requests()

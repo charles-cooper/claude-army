@@ -842,3 +842,108 @@ class TestRegistryReloadAfterExternalChange:
             registry = Registry()
 
             assert "tasks" in registry._cache
+
+
+class TestRegistryGetTopicForSession:
+    """Test Registry.get_topic_for_session method."""
+
+    def test_get_topic_for_session_found(self, tmp_path):
+        """Test get_topic_for_session returns topic_id when session found."""
+        from registry import Registry, reset_singletons
+        reset_singletons()
+
+        registry_path = tmp_path / "registry.json"
+
+        with patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", tmp_path):
+            registry = Registry()
+            registry.add_task("my_task", {
+                "type": "session",
+                "topic_id": 12345,
+                "session_id": "session-abc-123"
+            })
+
+            topic_id = registry.get_topic_for_session("session-abc-123")
+            assert topic_id == 12345
+
+    def test_get_topic_for_session_not_found(self, tmp_path):
+        """Test get_topic_for_session returns None when session not found."""
+        from registry import Registry, reset_singletons
+        reset_singletons()
+
+        registry_path = tmp_path / "registry.json"
+
+        with patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", tmp_path):
+            registry = Registry()
+            registry.add_task("my_task", {
+                "type": "session",
+                "topic_id": 12345,
+                "session_id": "session-abc-123"
+            })
+
+            topic_id = registry.get_topic_for_session("unknown-session")
+            assert topic_id is None
+
+    def test_get_topic_for_session_no_topic_id(self, tmp_path):
+        """Test get_topic_for_session returns None when task has no topic_id."""
+        from registry import Registry, reset_singletons
+        reset_singletons()
+
+        registry_path = tmp_path / "registry.json"
+
+        with patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", tmp_path):
+            registry = Registry()
+            registry.add_task("my_task", {
+                "type": "session",
+                "session_id": "session-no-topic"
+                # No topic_id
+            })
+
+            topic_id = registry.get_topic_for_session("session-no-topic")
+            assert topic_id is None
+
+    def test_get_topic_for_session_empty_registry(self, tmp_path):
+        """Test get_topic_for_session returns None with empty registry."""
+        from registry import Registry, reset_singletons
+        reset_singletons()
+
+        registry_path = tmp_path / "registry.json"
+
+        with patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", tmp_path):
+            registry = Registry()
+
+            topic_id = registry.get_topic_for_session("any-session")
+            assert topic_id is None
+
+    def test_get_topic_for_session_multiple_tasks(self, tmp_path):
+        """Test get_topic_for_session finds correct task among multiple."""
+        from registry import Registry, reset_singletons
+        reset_singletons()
+
+        registry_path = tmp_path / "registry.json"
+
+        with patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", tmp_path):
+            registry = Registry()
+            registry.add_task("task1", {
+                "type": "session",
+                "topic_id": 111,
+                "session_id": "session-1"
+            })
+            registry.add_task("task2", {
+                "type": "session",
+                "topic_id": 222,
+                "session_id": "session-2"
+            })
+            registry.add_task("task3", {
+                "type": "session",
+                "topic_id": 333,
+                "session_id": "session-3"
+            })
+
+            # Find middle task
+            topic_id = registry.get_topic_for_session("session-2")
+            assert topic_id == 222

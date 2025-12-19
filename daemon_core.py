@@ -117,6 +117,9 @@ class Daemon:
         self._running = True
         log(f"Starting daemon (PID {os.getpid()})...")
 
+        # Set event loop for cross-thread signaling
+        self.permission_manager.set_event_loop(asyncio.get_running_loop())
+
         # Start permission HTTP server in background thread
         permission_thread = threading.Thread(
             target=start_permission_server,
@@ -304,46 +307,40 @@ class Daemon:
             raise
 
     async def _handle_permission_requests(self) -> None:
-        """Monitor and send notifications for pending permissions."""
+        """Handle permission requests via async iterator."""
         try:
-            while self._running:
+            async for tool_use_id, session_id in self.permission_manager.pending_notifications():
                 try:
-                    # Check for pending permissions that don't have Telegram notifications yet
-                    with self.permission_manager._lock:
-                        pending_count = len(self.permission_manager.pending)
-                        pending_items = list(self.permission_manager.pending.items())
-
-                    if pending_count > 0:
-                        log(f"Permission check: {pending_count} pending requests")
-
-                    for tool_use_id, pending in pending_items:
-                        if pending.telegram_msg_id is None:
-                            log(f"Permission needs notification: {pending.tool_name} ({tool_use_id[:20]}...)")
-                            # Send notification
-                            task_name = self._get_task_for_session(pending.session_id)
-                            log(f"Permission task lookup: session={pending.session_id[:20]}... -> task={task_name}")
-                            if task_name:
-                                topic_id = self._get_topic_id_for_task(task_name)
-                                log(f"Permission topic lookup: task={task_name} -> topic_id={topic_id}")
-                                if topic_id:
-                                    send_permission_notification(
-                                        self.permission_manager,
-                                        self.bot_token,
-                                        self.chat_id,
-                                        topic_id,
-                                        tool_use_id
-                                    )
-                                else:
-                                    log(f"Permission skip: no topic_id for task {task_name}")
-                            else:
-                                log(f"Permission skip: no task found for session {pending.session_id[:20]}...")
+                    await self._process_permission_request(tool_use_id, session_id)
                 except Exception as e:
-                    log(f"Error checking pending permissions: {e}")
-
-                await asyncio.sleep(0.5)
+                    log(f"Permission handling error: {e}")
         except asyncio.CancelledError:
             log("Permission request handler cancelled")
             raise
+
+    async def _process_permission_request(self, tool_use_id: str, session_id: str) -> None:
+        """Process a single permission notification."""
+        # Get topic directly from registry
+        topic_id = get_registry().get_topic_for_session(session_id)
+        if not topic_id:
+            log(f"No topic for session {session_id[:20]}...")
+            return
+
+        pending = self.permission_manager.get_pending(tool_use_id)
+        if not pending:
+            return  # Already resolved
+
+        if pending.telegram_msg_id is not None:
+            return  # Already notified
+
+        # Send notification
+        send_permission_notification(
+            self.permission_manager,
+            self.bot_token,
+            self.chat_id,
+            topic_id,
+            tool_use_id
+        )
 
     async def _on_system_init(self, task_name: str, event: SystemInit) -> None:
         """Handle system init event."""
@@ -462,14 +459,6 @@ class Daemon:
         if task_data:
             return task_data.get("topic_id")
 
-        return None
-
-    def _get_task_for_session(self, session_id: str) -> str | None:
-        """Get task name for a session ID."""
-        registry = get_registry()
-        for task_name, task_data in registry.get_all_tasks():
-            if task_data.get("session_id") == session_id:
-                return task_name
         return None
 
     def shutdown(self) -> None:
