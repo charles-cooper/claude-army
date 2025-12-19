@@ -270,7 +270,17 @@ class Daemon:
                                 continue
 
                         # Route message to appropriate Claude process
-                        await self._route_message_to_claude(msg.task_id, msg.text)
+                        # Include reply context and metadata
+                        text = msg.text
+                        if msg.reply_to_message:
+                            reply_msg = msg.reply_to_message
+                            reply_text = reply_msg.get("text", "")
+                            reply_msg_id = reply_msg.get("message_id", "?")
+                            reply_from = reply_msg.get("from", {}).get("first_name", "?")
+                            topic_id = reply_msg.get("message_thread_id", "?")
+                            if reply_text:
+                                text = f"[Replying to msg_id={reply_msg_id} topic={topic_id} from={reply_from}]\n{reply_text}\n\n[msg_id={msg.msg_id}]\n{msg.text}"
+                        await self._route_message_to_claude(msg.task_id, text)
 
                 except Exception as e:
                     log(f"Error handling Telegram message: {e}")
