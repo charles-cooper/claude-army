@@ -602,10 +602,10 @@ class TestTelegramAdapterAdvanced:
 
 @pytest.mark.asyncio
 class TestTelegramAdapterGroupChatId:
-    """Test _get_group_chat_id routing logic."""
+    """Test get_group_chat_id routing logic."""
 
-    async def test_get_group_chat_id_uses_registry_config(self, mock_telegram_server):
-        """Test _get_group_chat_id prefers config.group_id over constructor chat_id."""
+    async def testget_group_chat_id_uses_registry_config(self, mock_telegram_server):
+        """Test get_group_chat_id prefers config.group_id over constructor chat_id."""
         with patch("telegram_adapter.get_registry") as mock_registry, \
              patch("telegram_adapter.get_config") as mock_config:
 
@@ -620,13 +620,13 @@ class TestTelegramAdapterGroupChatId:
             from telegram_adapter import TelegramAdapter
 
             adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-            chat_id = adapter._get_group_chat_id()
+            chat_id = adapter.get_group_chat_id()
 
             # Should use config.group_id, not constructor chat_id
             assert chat_id == "-1009999999999"
 
-    async def test_get_group_chat_id_fallback_to_constructor(self, mock_telegram_server):
-        """Test _get_group_chat_id falls back to constructor chat_id when config.group_id is None."""
+    async def testget_group_chat_id_fallback_to_constructor(self, mock_telegram_server):
+        """Test get_group_chat_id falls back to constructor chat_id when config.group_id is None."""
         with patch("telegram_adapter.get_registry") as mock_registry, \
              patch("telegram_adapter.get_config") as mock_config:
 
@@ -641,7 +641,7 @@ class TestTelegramAdapterGroupChatId:
             from telegram_adapter import TelegramAdapter
 
             adapter = TelegramAdapter("TOKEN", "-1001234567890", timeout=1)
-            chat_id = adapter._get_group_chat_id()
+            chat_id = adapter.get_group_chat_id()
 
             # Should fall back to constructor chat_id
             assert chat_id == "-1001234567890"
@@ -855,7 +855,7 @@ class TestParseMessageGroupRouting:
         """Test _parse_message matches group when config.group_id is None.
 
         Bug: When config.group_id was None, str(None)="None" never matched chat_id.
-        Fix: Use _get_group_chat_id() which falls back to self.chat_id.
+        Fix: Use get_group_chat_id() which falls back to self.chat_id.
         """
         with patch("telegram_adapter.get_registry") as mock_registry, \
              patch("telegram_adapter.get_config") as mock_config:

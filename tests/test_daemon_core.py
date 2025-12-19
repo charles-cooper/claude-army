@@ -362,8 +362,8 @@ class TestCommandHandlerChatId:
     def mock_telegram_adapter(self):
         """Create a mock TelegramAdapter."""
         adapter = MagicMock()
-        # _get_group_chat_id returns the correct group ID from config
-        adapter._get_group_chat_id = MagicMock(return_value="-1009999888877")
+        # get_group_chat_id returns the correct group ID from config
+        adapter.get_group_chat_id = MagicMock(return_value="-1009999888877")
         return adapter
 
     @pytest.fixture
@@ -374,15 +374,15 @@ class TestCommandHandlerChatId:
         return handler
 
     @pytest.mark.asyncio
-    async def test_command_uses_telegram_get_group_chat_id(
+    async def test_command_uses_telegramget_group_chat_id(
         self, mock_telegram_adapter, mock_command_handler
     ):
-        """Test that chat_id in tg_msg comes from telegram._get_group_chat_id().
+        """Test that chat_id in tg_msg comes from telegram.get_group_chat_id().
 
         Bug fix: Previously, the daemon used self.chat_id when building the tg_msg
         dict for the command handler. This was wrong because self.chat_id comes from
-        the constructor, while telegram._get_group_chat_id() uses the registry config
-        group_id (which may differ). Now we correctly use telegram._get_group_chat_id().
+        the constructor, while telegram.get_group_chat_id() uses the registry config
+        group_id (which may differ). Now we correctly use telegram.get_group_chat_id().
         """
         # Create daemon with one chat_id
         daemon = Daemon("test_token", "-1001111222233")  # Constructor chat_id
@@ -391,7 +391,7 @@ class TestCommandHandlerChatId:
 
         # The adapter returns a different group_id from config
         assert daemon.chat_id == "-1001111222233"
-        assert mock_telegram_adapter._get_group_chat_id() == "-1009999888877"
+        assert mock_telegram_adapter.get_group_chat_id() == "-1009999888877"
 
         # Create a mock incoming message
         from frontend_adapter import IncomingMessage
@@ -408,7 +408,7 @@ class TestCommandHandlerChatId:
         with patch.object(daemon, '_get_topic_id_for_task', return_value=1):
             # Simulate the command handling logic from _handle_telegram_messages
             topic_id = daemon._get_topic_id_for_task(msg.task_id)
-            group_chat_id = daemon.telegram._get_group_chat_id()
+            group_chat_id = daemon.telegram.get_group_chat_id()
             tg_msg = {
                 "text": msg.text,
                 "message_id": int(msg.msg_id),
@@ -422,7 +422,7 @@ class TestCommandHandlerChatId:
         mock_command_handler.handle_command.assert_called_once()
         called_tg_msg = mock_command_handler.handle_command.call_args[0][0]
 
-        # The chat_id should be from telegram._get_group_chat_id(), NOT daemon.chat_id
+        # The chat_id should be from telegram.get_group_chat_id(), NOT daemon.chat_id
         assert called_tg_msg["chat"]["id"] == -1009999888877
         assert called_tg_msg["chat"]["id"] != int(daemon.chat_id)
 
@@ -448,7 +448,7 @@ class TestCommandHandlerChatId:
 
         with patch.object(daemon, '_get_topic_id_for_task', return_value=1):
             topic_id = daemon._get_topic_id_for_task(msg.task_id)
-            group_chat_id = daemon.telegram._get_group_chat_id()
+            group_chat_id = daemon.telegram.get_group_chat_id()
             tg_msg = {
                 "text": msg.text,
                 "message_id": int(msg.msg_id),
@@ -553,8 +553,8 @@ class TestProcessPermissionRequest:
              patch("daemon_core.send_permission_notification") as mock_send:
             await daemon._process_permission_request("toolu_process_test", "session-123")
 
-            # Uses telegram._get_group_chat_id() which returns config.group_id or chat_id
-            expected_chat_id = daemon.telegram._get_group_chat_id()
+            # Uses telegram.get_group_chat_id() which returns config.group_id or chat_id
+            expected_chat_id = daemon.telegram.get_group_chat_id()
             mock_send.assert_called_once_with(
                 daemon.permission_manager,
                 "test_token",
