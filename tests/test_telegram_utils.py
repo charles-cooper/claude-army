@@ -29,33 +29,33 @@ class TestTelegramUtils:
         assert "List files" in result
 
     def test_format_tool_permission_edit(self):
-        """Test format_tool_permission for Edit tool."""
+        """Test format_tool_permission for Edit tool shows full path."""
         from telegram_utils import format_tool_permission
 
         result = format_tool_permission(
             "Edit",
-            {"file_path": "/home/user/test.py", "old_string": "old", "new_string": "new"}
+            {"file_path": "/home/user/project/test.py", "old_string": "old", "new_string": "new"}
         )
-        assert "test.py" in result
+        assert "/home/user/project/test.py" in result  # Full path preserved
         assert "diff" in result
 
     def test_format_tool_permission_write(self):
-        """Test format_tool_permission for Write tool."""
+        """Test format_tool_permission for Write tool shows full path."""
         from telegram_utils import format_tool_permission
 
         result = format_tool_permission(
             "Write",
-            {"file_path": "/home/user/new.py", "content": "print('hello')"}
+            {"file_path": "/home/user/project/new.py", "content": "print('hello')"}
         )
-        assert "new.py" in result
+        assert "/home/user/project/new.py" in result  # Full path preserved
         assert "print" in result
 
     def test_format_tool_permission_read(self):
-        """Test format_tool_permission for Read tool."""
+        """Test format_tool_permission for Read tool shows full path."""
         from telegram_utils import format_tool_permission
 
-        result = format_tool_permission("Read", {"file_path": "/home/user/file.txt"})
-        assert "file.txt" in result
+        result = format_tool_permission("Read", {"file_path": "/home/user/project/file.txt"})
+        assert "/home/user/project/file.txt" in result  # Full path preserved
 
     def test_format_tool_permission_ask_user_question(self):
         """Test format_tool_permission for AskUserQuestion tool."""

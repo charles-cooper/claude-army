@@ -131,7 +131,7 @@ def format_tool_permission(tool_name: str, tool_input: dict, markdown_v2: bool =
         return f"{esc('Claude is asking permission to run:')}\n\n```bash\n{cmd}\n```{desc_line}"
 
     elif tool_name == "Edit":
-        fp = strip_home(tool_input.get("file_path", ""))
+        fp = tool_input.get("file_path", "")
         old = tool_input.get("old_string", "")
         new = tool_input.get("new_string", "")
         diff = "\n".join(
@@ -144,12 +144,12 @@ def format_tool_permission(tool_name: str, tool_input: dict, markdown_v2: bool =
         return f"{esc('Claude is asking permission to edit')} `{esc(fp)}`{esc(':')}\n\n```diff\n{diff}\n```"
 
     elif tool_name == "Write":
-        fp = strip_home(tool_input.get("file_path", ""))
+        fp = tool_input.get("file_path", "")
         content = tool_input.get("content", "").replace("```", "'''")
         return f"{esc('Claude is asking permission to write')} `{esc(fp)}`{esc(':')}\n\n```\n{content}\n```"
 
     elif tool_name == "Read":
-        fp = strip_home(tool_input.get("file_path", ""))
+        fp = tool_input.get("file_path", "")
         return f"{esc('Claude is asking permission to read')} `{esc(fp)}`"
 
     elif tool_name == "AskUserQuestion":
