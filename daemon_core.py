@@ -323,7 +323,10 @@ class Daemon:
         # Get topic directly from registry
         topic_id = get_registry().get_topic_for_session(session_id)
         if not topic_id:
-            log(f"No topic for session {session_id[:20]}...")
+            log(f"No topic for session {session_id[:20]}..., auto-denying permission")
+            self.permission_manager.respond(
+                tool_use_id, "deny", "No topic found for session"
+            )
             return
 
         pending = self.permission_manager.get_pending(tool_use_id)
@@ -334,13 +337,20 @@ class Daemon:
             return  # Already notified
 
         # Send notification
-        send_permission_notification(
+        success = send_permission_notification(
             self.permission_manager,
             self.bot_token,
             self.chat_id,
             topic_id,
             tool_use_id
         )
+
+        # Auto-deny if notification failed (e.g., topic deleted)
+        if not success:
+            log(f"Auto-denied: failed to send notification to topic {topic_id} (topic may have been deleted)")
+            self.permission_manager.respond(
+                tool_use_id, "deny", "Failed to send notification - topic may have been deleted"
+            )
 
     async def _on_system_init(self, task_name: str, event: SystemInit) -> None:
         """Handle system init event."""

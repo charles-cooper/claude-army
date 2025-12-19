@@ -259,15 +259,18 @@ def send_permission_notification(
     chat_id: str,
     topic_id: int,
     tool_use_id: str
-):
+) -> bool:
     """Send Telegram notification for a permission request.
 
     Sends message with Allow/Deny buttons, registers msg_id for callbacks.
+
+    Returns:
+        True if notification was sent successfully, False otherwise.
     """
     pending = manager.get_pending(tool_use_id)
     if not pending:
         log(f"Cannot send notification: tool_use_id not found ({tool_use_id[:20]}...)")
-        return
+        return False
 
     # Format permission message
     text = format_tool_permission(
@@ -293,8 +296,10 @@ def send_permission_notification(
         msg_id = resp["result"]["message_id"]
         manager.register_telegram_msg(tool_use_id, msg_id)
         log(f"Sent permission notification: msg_id={msg_id}")
+        return True
     else:
-        log(f"Failed to send permission notification")
+        log(f"Failed to send permission notification for topic {topic_id}")
+        return False
 
 
 # Example integration with Telegram callbacks:
