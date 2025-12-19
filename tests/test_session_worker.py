@@ -191,11 +191,11 @@ class TestFileOperations:
         assert "(No description provided)" in content
 
     def test_append_todo_creates_file(self, temp_dir):
-        """Test append_todo creates TODO.local.md if missing."""
+        """Test append_todo creates .agent-files/TODO.local.md if missing."""
         result = append_todo(temp_dir, "Fix the bug")
 
         assert result is True
-        path = Path(temp_dir) / "TODO.local.md"
+        path = Path(temp_dir) / ".agent-files" / "TODO.local.md"
         assert path.exists()
         content = path.read_text()
         assert "# TODO" in content
@@ -203,7 +203,9 @@ class TestFileOperations:
 
     def test_append_todo_appends(self, temp_dir):
         """Test append_todo appends to existing file."""
-        path = Path(temp_dir) / "TODO.local.md"
+        agent_dir = Path(temp_dir) / ".agent-files"
+        agent_dir.mkdir()
+        path = agent_dir / "TODO.local.md"
         path.write_text("# TODO\n\n- [ ] First item\n")
 
         result = append_todo(temp_dir, "Second item")
@@ -217,7 +219,7 @@ class TestFileOperations:
         """Test append_todo uses correct checkbox format."""
         append_todo(temp_dir, "Test item")
 
-        path = Path(temp_dir) / "TODO.local.md"
+        path = Path(temp_dir) / ".agent-files" / "TODO.local.md"
         content = path.read_text()
         # Should have proper markdown checkbox format
         assert "- [ ] Test item\n" in content
@@ -230,8 +232,10 @@ class TestFileOperations:
     def test_append_todo_returns_false_on_error(self, temp_dir):
         """Test append_todo returns False on error."""
         # Create a directory where a file is expected (will cause write error)
-        path = Path(temp_dir) / "TODO.local.md"
-        path.mkdir()
+        agent_dir = Path(temp_dir) / ".agent-files"
+        agent_dir.mkdir()
+        path = agent_dir / "TODO.local.md"
+        path.mkdir()  # Create dir where file expected
 
         result = append_todo(temp_dir, "Should fail")
         assert result is False

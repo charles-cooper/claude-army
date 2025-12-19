@@ -96,7 +96,7 @@ def build_summarize_prompt(tasks: list[tuple[str, dict]]) -> str:
             # Include TODO files if present
             path = task_data.get("path")
             if path:
-                for todo_file in ["TODO.local.md", "TODO.md"]:
+                for todo_file in [".agent-files/TODO.local.md", "TODO.local.md", "TODO.md"]:
                     todo_path = Path(path) / todo_file
                     if todo_path.exists():
                         try:
@@ -282,7 +282,7 @@ class CommandHandler:
         if task_name and task_data and not is_general:
             path = task_data.get("path")
             if path and append_todo(path, todo_text):
-                self._reply(chat_id, msg_id, "✅ Added to TODO.local.md")
+                self._reply(chat_id, msg_id, "✅ Added to .agent-files/TODO.local.md")
                 log(f"  /todo added to {task_name}: {todo_text[:50]}...")
             else:
                 self._reply(chat_id, msg_id, "Failed to add todo")
