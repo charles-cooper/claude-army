@@ -1,29 +1,47 @@
 #!/usr/bin/env python3
 """Permission hook for Claude tool calls.
 
-Invoked by Claude SDK as a PreToolUse hook. Reads tool info from stdin,
-POSTs to permission server, blocks until user responds, outputs decision.
+Only activates for daemon-managed sessions (CLAUDE_ARMY_MANAGED=1).
+Non-managed sessions get clean passthrough.
 """
 
 import json
 import os
 import sys
-import requests
 from typing import Literal
 
+import requests
 
-def request_permission(
-    tool_name: str,
-    tool_input: dict,
-    tool_use_id: str,
-    session_id: str,
-    cwd: str
-) -> tuple[Literal["allow", "deny"], str]:
-    """Request permission from server. Returns (decision, reason).
 
-    Blocks until user responds (5 min timeout).
-    On timeout or error, returns ("deny", reason).
-    """
+def is_managed_session() -> bool:
+    """Check if this session is managed by claude-army daemon."""
+    return os.environ.get("CLAUDE_ARMY_MANAGED") == "1"
+
+
+def passthrough_response():
+    """Return passthrough - let Claude handle normally."""
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            # No permissionDecision = passthrough
+        }
+    }
+
+
+def permission_response(decision: Literal["allow", "deny"], reason: str = ""):
+    """Return a permission decision response."""
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason
+        }
+    }
+
+
+def request_permission(tool_name: str, tool_input: dict, tool_use_id: str,
+                       session_id: str, cwd: str) -> tuple[Literal["allow", "deny"], str]:
+    """Request permission from server with specific exception handling."""
     server_url = os.environ.get("PERMISSION_SERVER", "http://localhost:9000")
     endpoint = f"{server_url}/permission/request"
 
@@ -35,82 +53,72 @@ def request_permission(
         "cwd": cwd
     }
 
-    timeout = 300  # 5 minutes
-
     try:
-        resp = requests.post(endpoint, json=payload, timeout=timeout)
-
-        if not resp.ok:
-            return ("deny", f"Permission server error: {resp.status_code}")
-
+        resp = requests.post(endpoint, json=payload, timeout=300)
+        resp.raise_for_status()
         result = resp.json()
-        decision = result.get("decision", "deny")
+        decision = result.get("decision")
         reason = result.get("reason", "")
 
         if decision not in ("allow", "deny"):
-            return ("deny", f"Invalid decision from server: {decision}")
+            raise ValueError(f"Invalid decision: {decision}")
 
         return (decision, reason)
 
-    except requests.Timeout:
-        return ("deny", "Permission request timed out (5 min)")
+    except requests.ConnectionError:
+        # Server not running - config error for managed sessions
+        raise RuntimeError("Permission server not running")
 
-    except Exception as e:
-        return ("deny", f"Permission request failed: {e}")
+    except requests.Timeout:
+        # User didn't respond in 5 min
+        return ("deny", "Permission request timed out")
+
+    except requests.HTTPError as e:
+        raise RuntimeError(f"Permission server error: {e}")
+
+    except ValueError as e:
+        raise RuntimeError(str(e))
 
 
 def main():
-    """Read hook input from stdin, request permission, output decision."""
+    # Check if managed session FIRST
+    if not is_managed_session():
+        json.dump(passthrough_response(), sys.stdout)
+        sys.exit(0)
+
+    # Parse hook input
     try:
-        # Read hook input from stdin
         hook_input = json.load(sys.stdin)
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"Hook: Invalid JSON input: {e}\n")
+        json.dump(permission_response("allow", "Invalid hook input"), sys.stdout)
+        sys.exit(0)
 
-        tool_name = hook_input.get("tool_name")
-        tool_input = hook_input.get("tool_input", {})
-        tool_use_id = hook_input.get("tool_use_id")
-        session_id = hook_input.get("session_id")
-        cwd = hook_input.get("cwd", os.getcwd())
+    # Extract required fields
+    tool_name = hook_input.get("tool_name")
+    tool_input = hook_input.get("tool_input", {})
+    tool_use_id = hook_input.get("tool_use_id")
+    session_id = hook_input.get("session_id")
+    cwd = hook_input.get("cwd", os.getcwd())
 
-        if not all([tool_name, tool_use_id, session_id]):
-            # Missing required fields - deny
-            output = {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": "Missing required fields in hook input"
-                }
-            }
-            json.dump(output, sys.stdout)
-            sys.exit(0)
+    if not all([tool_name, tool_use_id, session_id]):
+        sys.stderr.write("Hook: Missing required fields\n")
+        json.dump(permission_response("deny", "Missing required fields"), sys.stdout)
+        sys.exit(0)
 
-        # Request permission from server
+    # Request permission
+    try:
         decision, reason = request_permission(
             tool_name, tool_input, tool_use_id, session_id, cwd
         )
-
-        # Output decision
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": decision,
-                "permissionDecisionReason": reason
-            }
-        }
-
-        json.dump(output, sys.stdout)
+        json.dump(permission_response(decision, reason), sys.stdout)
         sys.exit(0)
 
-    except Exception as e:
-        # On any error, deny with reason
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": f"Hook error: {e}"
-            }
-        }
-        json.dump(output, sys.stdout)
-        sys.exit(1)
+    except RuntimeError as e:
+        # Server/config errors - log and fail-open
+        sys.stderr.write(f"Hook: {e}\n")
+        json.dump(permission_response("allow", str(e)), sys.stdout)
+        sys.exit(0)
 
 
 if __name__ == "__main__":

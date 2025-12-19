@@ -460,3 +460,66 @@ class TestCommandHandlerChatId:
 
         called_tg_msg = mock_command_handler.handle_command.call_args[0][0]
         assert called_tg_msg["reply_to_message"] == reply_msg
+
+
+class TestOnSystemInit:
+    """Test _on_system_init updates registry with session tracking."""
+
+    @pytest.mark.asyncio
+    async def test_on_system_init_updates_registry(self):
+        """Test that _on_system_init calls registry.update_task_session_tracking.
+
+        Bug fix: When a process emits SystemInit, we need to update the registry
+        with the new session_id so that permission lookups and task routing work
+        correctly. This ensures the registry always has the current session_id.
+        """
+        from claude_process import SystemInit
+
+        daemon = Daemon("test_token", "123456789")
+
+        # Create a mock registry
+        mock_registry = MagicMock()
+        mock_registry.update_task_session_tracking = MagicMock()
+
+        # Create a SystemInit event
+        init_event = SystemInit(
+            session_id="new-session-abc123",
+            tools=["Read", "Write"],
+            model="claude-sonnet-4",
+            raw={}
+        )
+
+        with patch("daemon_core.get_registry", return_value=mock_registry):
+            await daemon._on_system_init("my_task", init_event)
+
+        # Verify registry was updated with the session_id
+        mock_registry.update_task_session_tracking.assert_called_once_with(
+            "my_task",
+            session_id="new-session-abc123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_on_system_init_logs_event(self):
+        """Test that _on_system_init logs the system init event."""
+        from claude_process import SystemInit
+
+        daemon = Daemon("test_token", "123456789")
+
+        init_event = SystemInit(
+            session_id="session-xyz789",
+            tools=[],
+            model="claude-sonnet-4",
+            raw={}
+        )
+
+        mock_registry = MagicMock()
+
+        with patch("daemon_core.get_registry", return_value=mock_registry), \
+             patch("daemon_core.log") as mock_log:
+            await daemon._on_system_init("test_task", init_event)
+
+        # Verify logging occurred
+        mock_log.assert_called()
+        log_message = mock_log.call_args[0][0]
+        assert "test_task" in log_message
+        assert "session-xyz789" in log_message

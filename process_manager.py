@@ -160,7 +160,7 @@ class ProcessManager:
         # Create process with resume flag
         process = ClaudeProcessImpl(
             cwd=cwd,
-            session_id=session_id,
+            resume_session_id=session_id,
             allowed_tools=allowed_tools
         )
 

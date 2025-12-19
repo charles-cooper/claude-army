@@ -140,12 +140,19 @@ class ClaudeProcess:
         log(f"Starting Claude: {' '.join(cmd)}")
 
         try:
+            # Set up environment with CLAUDE_ARMY_MANAGED flag
+            env = {
+                **os.environ,
+                "CLAUDE_ARMY_MANAGED": "1",
+            }
+
             self.process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.cwd,
+                env=env,
                 preexec_fn=_set_pdeathsig,
             )
             self._running = True

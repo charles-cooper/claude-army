@@ -348,6 +348,8 @@ class Daemon:
     async def _on_system_init(self, task_name: str, event: SystemInit) -> None:
         """Handle system init event."""
         log(f"System init: {task_name} (session={event.session_id})")
+        registry = get_registry()
+        registry.update_task_session_tracking(task_name, session_id=event.session_id)
 
     async def _on_assistant_message(self, task_name: str, event: AssistantMessage) -> None:
         """Handle assistant message event."""

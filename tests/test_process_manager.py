@@ -471,3 +471,61 @@ class TestProcessManagerAdvanced:
             cleaned = await manager.cleanup_crashed_processes()
 
             assert "no_pid_task" not in cleaned
+
+    async def test_resume_process_passes_resume_session_id(self, temp_dir):
+        """Test resume_process passes resume_session_id to ClaudeProcess constructor.
+
+        Bug fix: Previously, resume_process() did not pass the session_id parameter
+        to ClaudeProcess, so the process would start a new session instead of resuming.
+        Now it correctly passes resume_session_id=session_id.
+        """
+        from registry import reset_singletons
+        reset_singletons()
+
+        registry_path = Path(temp_dir) / "registry.json"
+        with patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)):
+
+            mock_process = AsyncMock()
+            mock_process.start = AsyncMock(return_value="existing-session-789")
+            mock_process.session_id = "existing-session-789"
+            mock_process.pid = 7777
+            mock_process.is_running = True
+
+            async def mock_events():
+                yield {"type": "system", "subtype": "init"}
+
+            mock_process.events = mock_events
+
+            # Capture the kwargs passed to ClaudeProcess constructor
+            captured_kwargs = {}
+
+            def mock_claude_process(**kwargs):
+                captured_kwargs.update(kwargs)
+                return mock_process
+
+            # Patch the import inside the function
+            import claude_process
+            with patch.object(claude_process, "ClaudeProcess", side_effect=mock_claude_process):
+                manager = ProcessManager()
+
+                from registry import get_registry
+                registry = get_registry()
+                registry.add_task("resume_test", {
+                    "type": "session",
+                    "path": temp_dir,
+                    "session_id": "existing-session-789"
+                })
+
+                await manager.resume_process(
+                    task_name="resume_test",
+                    cwd=temp_dir,
+                    session_id="existing-session-789",
+                    allowed_tools=["Read", "Write"]
+                )
+
+            # Verify resume_session_id was passed correctly
+            assert "resume_session_id" in captured_kwargs
+            assert captured_kwargs["resume_session_id"] == "existing-session-789"
+            assert captured_kwargs["cwd"] == temp_dir
+            assert captured_kwargs["allowed_tools"] == ["Read", "Write"]
