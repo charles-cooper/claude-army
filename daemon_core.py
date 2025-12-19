@@ -156,8 +156,7 @@ class Daemon:
                 )
                 started = await process.start()
                 if started:
-                    self.process_manager.processes["operator"] = process
-                    self.process_manager._start_event_task("operator", process)
+                    self.process_manager.register_process("operator", process)
                     log("Operator session resumed")
                     return
             except Exception as e:
@@ -173,7 +172,7 @@ class Daemon:
             if not started:
                 raise RuntimeError("Failed to start operator process")
 
-            self.process_manager.processes["operator"] = process
+            self.process_manager.register_process("operator", process, start_events=False)
 
             # Wait for session_id from init event (should come quickly)
             # Don't start event task yet - we need to handle init turn first
@@ -192,7 +191,7 @@ class Daemon:
             await self._drain_init_turn(process)
 
             # Now start event task for subsequent user messages
-            self.process_manager._start_event_task("operator", process)
+            self.process_manager.start_event_monitoring("operator")
 
             # Update registry with operator task
             operator_data = {
@@ -283,7 +282,7 @@ class Daemon:
                         if msg.text.startswith("/"):
                             # Build a minimal telegram message dict for command handler
                             topic_id = self._get_topic_id_for_task(msg.task_id)
-                            group_chat_id = self.telegram._get_group_chat_id()
+                            group_chat_id = self.telegram.get_group_chat_id()
                             tg_msg = {
                                 "text": msg.text,
                                 "message_id": int(msg.msg_id),
@@ -340,7 +339,7 @@ class Daemon:
         success = send_permission_notification(
             self.permission_manager,
             self.bot_token,
-            self.telegram._get_group_chat_id(),
+            self.telegram.get_group_chat_id(),
             topic_id,
             tool_use_id
         )
@@ -356,15 +355,15 @@ class Daemon:
         """Handle system init event."""
         registry = get_registry()
 
-        # Determine session type based on _init_received flag
+        # Determine session type based on has_received_init property
         process = self.process_manager.processes.get(task_name)
-        if process and not process._init_received:
+        if process and not process.has_received_init:
             # First init for this process
             if process.resume_session_id:
                 log(f"Resumed session: {task_name} (session={event.session_id})")
             else:
                 log(f"New session: {task_name} (session={event.session_id})")
-            process._init_received = True
+            process.mark_init_received()
         else:
             log(f"Existing session: {task_name} (session={event.session_id})")
 
