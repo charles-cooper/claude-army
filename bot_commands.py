@@ -1,5 +1,6 @@
 """Bot command handlers for Telegram integration."""
 
+import asyncio
 import datetime
 import json
 
@@ -248,6 +249,11 @@ class CommandHandler:
         # /operator - request operator intervention for current task
         if text_lower.startswith("/operator"):
             self._handle_operator(msg, chat_id, msg_id, text, topic_id)
+            return True
+
+        # /stop - stop current task's Claude process
+        if text_lower.startswith("/stop"):
+            self._handle_stop(msg, chat_id, msg_id, text, topic_id)
             return True
 
         return False
@@ -512,6 +518,38 @@ class CommandHandler:
         else:
             self._reply(chat_id, msg_id, "Operator not available")
 
+    def _handle_stop(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
+        """Handle /stop - stop current task's Claude process."""
+        task_name = parse_command_args(text)
+
+        if not task_name:
+            task_name = self._get_task_name_for_topic(topic_id)
+
+        if not task_name:
+            self._reply(chat_id, msg_id, "No task in this topic. Use `/stop <task_name>` to specify.")
+            return
+
+        if task_name == "operator":
+            self._reply(chat_id, msg_id, "Cannot stop operator.")
+            return
+
+        if not self.process_manager:
+            self._reply(chat_id, msg_id, "Process manager not available.")
+            return
+
+        if not self.process_manager.is_running(task_name):
+            self._reply(chat_id, msg_id, f"Task `{task_name}` is not running.")
+            return
+
+        async def do_stop():
+            try:
+                await self.process_manager.stop_process(task_name)
+            except Exception as e:
+                log(f"Error stopping {task_name}: {e}")
+
+        asyncio.create_task(do_stop())
+        self._reply(chat_id, msg_id, f"Stopping `{task_name}`...")
+
     def _handle_spawn(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /spawn - route spawn request to operator."""
         request = parse_command_args(text)
@@ -592,6 +630,7 @@ class CommandHandler:
 /status - Show all tasks and status
 /spawn <desc> - Create a new task
 /cleanup - Clean up current task
+/stop [task] - Stop task's Claude process
 /todo <item> - Add todo to task or operator
 /operator [msg] - Request operator intervention for task
 /summarize - Have operator summarize all tasks

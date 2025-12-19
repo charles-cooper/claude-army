@@ -352,6 +352,9 @@ class ClaudeProcess:
                 self.process.stdin.close()
                 await self.process.stdin.wait_closed()
 
+            # Send SIGTERM to request graceful shutdown
+            self.process.terminate()
+
             # Wait for process to exit
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=timeout)

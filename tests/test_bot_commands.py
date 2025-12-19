@@ -486,3 +486,240 @@ class TestGetTaskNameForTopic:
             handler = CommandHandler("TOKEN", "-1001234567890", {})
             result = handler._get_task_name_for_topic(999)
             assert result is None
+
+
+class TestHandleStop:
+    """Tests for /stop command handler."""
+
+    def test_stop_from_general_topic_rejected(self, temp_dir, mock_config):
+        """Test /stop from general topic (no topic_id) is rejected as operator."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_config.general_topic_id = 1
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {})
+            msg = {
+                "text": "/stop",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": None  # General topic
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "Cannot stop operator" in call_args[3]
+
+    def test_stop_unknown_topic(self, temp_dir, mock_config, mock_registry):
+        """Test /stop from unknown topic returns no task message."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_config.general_topic_id = 1
+        mock_registry.tasks = {}  # No tasks registered
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {})
+            msg = {
+                "text": "/stop",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": 999  # Unknown topic
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "No task in this topic" in call_args[3]
+
+    def test_stop_operator_rejected(self, temp_dir, mock_config):
+        """Test /stop operator is rejected."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_config.general_topic_id = 1
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {})
+            msg = {
+                "text": "/stop operator",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": None
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "Cannot stop operator" in call_args[3]
+
+    def test_stop_no_process_manager(self, temp_dir, mock_config, mock_registry):
+        """Test /stop with no process manager."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_registry.tasks = {"my_task": {"topic_id": 456}}
+        mock_config.general_topic_id = 1
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            # No process_manager
+            handler = CommandHandler("TOKEN", "-1001234567890", {}, process_manager=None)
+            msg = {
+                "text": "/stop my_task",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": None
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "Process manager not available" in call_args[3]
+
+    def test_stop_task_not_running(self, temp_dir, mock_config, mock_registry):
+        """Test /stop when task is not running."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_registry.tasks = {"my_task": {"topic_id": 456}}
+        mock_config.general_topic_id = 1
+
+        mock_pm = MagicMock()
+        mock_pm.is_running.return_value = False
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {}, process_manager=mock_pm)
+            msg = {
+                "text": "/stop my_task",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": None
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "is not running" in call_args[3]
+            mock_pm.is_running.assert_called_with("my_task")
+
+    def test_stop_success(self, temp_dir, mock_config, mock_registry):
+        """Test /stop successfully stops task."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_registry.tasks = {"my_task": {"topic_id": 456}}
+        mock_config.general_topic_id = 1
+
+        mock_pm = MagicMock()
+        mock_pm.is_running.return_value = True
+        mock_pm.stop_process = MagicMock()
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply, \
+             patch("bot_commands.asyncio.create_task") as mock_create_task:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {}, process_manager=mock_pm)
+            msg = {
+                "text": "/stop my_task",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": None
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "Stopping" in call_args[3]
+            assert "my_task" in call_args[3]
+            mock_create_task.assert_called_once()
+
+    def test_stop_infers_task_from_topic(self, temp_dir, mock_config, mock_registry):
+        """Test /stop infers task name from topic."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_registry.tasks = {"my_task": {"topic_id": 456}}
+        mock_config.general_topic_id = 1
+
+        mock_pm = MagicMock()
+        mock_pm.is_running.return_value = True
+        mock_pm.stop_process = MagicMock()
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply, \
+             patch("bot_commands.asyncio.create_task") as mock_create_task:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {}, process_manager=mock_pm)
+            msg = {
+                "text": "/stop",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": 456  # Topic for my_task
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "Stopping" in call_args[3]
+            assert "my_task" in call_args[3]
+            mock_pm.is_running.assert_called_with("my_task")
+            mock_create_task.assert_called_once()

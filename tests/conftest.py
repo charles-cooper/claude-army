@@ -227,6 +227,12 @@ class MockClaudeSubprocess:
         self.returncode = -9
         self._closed = True
 
+    def terminate(self):
+        """Terminate the process (SIGTERM)."""
+        if self.returncode is None:
+            self.returncode = 0
+        self._closed = True
+
     async def emit_events(self):
         """Emit all events to stdout queue."""
         for event in self.events:

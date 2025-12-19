@@ -378,6 +378,27 @@ class TestClaudeProcessTerminate:
             assert result is True
             assert mock_proc.returncode == -9
 
+    async def test_terminate_sends_sigterm(self, temp_dir):
+        """Test terminate sends SIGTERM after closing stdin."""
+        mock_proc = MockClaudeSubprocess(events=[SYSTEM_INIT_EVENT])
+        terminate_called = []
+
+        def mock_terminate():
+            terminate_called.append(True)
+            mock_proc.returncode = 0
+
+        mock_proc.terminate = mock_terminate
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            process = ClaudeProcess(cwd=temp_dir)
+            emit_task = asyncio.create_task(mock_proc.emit_events())
+            await process.start()
+            await emit_task
+
+            result = await process.terminate(timeout=0.5)
+            assert result is True
+            assert len(terminate_called) == 1  # terminate() was called
+
     async def test_start_already_started(self, temp_dir):
         """Test start when already started returns False."""
         mock_proc = MockClaudeSubprocess(events=[SYSTEM_INIT_EVENT])
