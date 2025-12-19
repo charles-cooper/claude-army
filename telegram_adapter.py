@@ -20,7 +20,7 @@ import requests
 from frontend_adapter import FrontendAdapter, IncomingMessage
 from registry import get_config, get_registry
 from telegram_utils import (
-    log, send_to_topic, update_message_buttons, answer_callback,
+    log, send_to_topic, update_message_buttons,
     send_chat_action, delete_message as tg_delete_message
 )
 
@@ -174,7 +174,7 @@ class TelegramAdapter(FrontendAdapter):
             topic_id,
             content,
             reply_markup=reply_markup,
-            parse_mode="MarkdownV2"
+            parse_mode="Markdown"
         )
 
         if response:
@@ -390,14 +390,10 @@ class TelegramAdapter(FrontendAdapter):
         Returns:
             IncomingMessage representing the button click
         """
-        cb_id = callback["id"]
         cb_data = callback.get("data", "")
         cb_msg = callback.get("message", {})
         msg_id = str(cb_msg.get("message_id"))
         topic_id = cb_msg.get("message_thread_id")
-
-        # Answer callback to dismiss loading state
-        answer_callback(self.bot_token, cb_id)
 
         # Determine task_id
         task_id = self._get_task_id_from_topic(topic_id)

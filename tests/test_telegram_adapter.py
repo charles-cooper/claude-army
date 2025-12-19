@@ -669,18 +669,16 @@ class TestTelegramAdapterIncoming:
         mock_cfg, mock_reg = mock_telegram_config
         mock_reg.find_task_by_topic.return_value = None
 
-        with patch("telegram_adapter.answer_callback") as mock_answer:
-            mock_telegram_server.add_callback_update("allow:toolu_123", msg_id=200, topic_id=456)
+        mock_telegram_server.add_callback_update("allow:toolu_123", msg_id=200, topic_id=456)
 
-            messages = []
-            async for msg in telegram_adapter_with_mock.incoming_messages():
-                messages.append(msg)
-                break
+        messages = []
+        async for msg in telegram_adapter_with_mock.incoming_messages():
+            messages.append(msg)
+            break
 
-            assert len(messages) == 1
-            assert messages[0].callback_data == "allow:toolu_123"
-            assert messages[0].text is None
-            mock_answer.assert_called_once()
+        assert len(messages) == 1
+        assert messages[0].callback_data == "allow:toolu_123"
+        assert messages[0].text is None
 
     async def test_incoming_messages_forum_topic_created(self, mock_telegram_server, telegram_adapter_with_mock, mock_telegram_config):
         """Test incoming_messages handles forum_topic_created events."""

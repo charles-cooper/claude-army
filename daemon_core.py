@@ -22,7 +22,7 @@ import sys
 import threading
 from pathlib import Path
 
-from telegram_utils import log, escape_markdown_v2
+from telegram_utils import log
 from registry import get_config, get_registry
 from process_manager import ProcessManager
 from permission_server import PermissionManager, start_permission_server, send_permission_notification
@@ -359,10 +359,8 @@ class Daemon:
         text = extract_text(event)
         log(f"_on_assistant_message: task={task_name}, text={text}")
         if text:
-            # Send to Telegram (escape for MarkdownV2)
-            escaped_text = escape_markdown_v2(text)
-            log(f"_on_assistant_message: sending to telegram, escaped_text={escaped_text}")
-            await self.telegram.send_message(task_name, escaped_text)
+            log(f"_on_assistant_message: sending to telegram, text={text}")
+            await self.telegram.send_message(task_name, text)
 
         # Check for tool uses (these will be handled by permission hooks)
         tools = extract_tool_uses(event)
