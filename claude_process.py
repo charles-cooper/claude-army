@@ -101,6 +101,7 @@ class ClaudeProcess:
 
         self.process: Optional[asyncio.subprocess.Process] = None
         self.session_id: Optional[str] = None
+        self._init_received: bool = False  # Set True after first system/init event
         self._stdout_task: Optional[asyncio.Task] = None
         self._stderr_task: Optional[asyncio.Task] = None
         self._event_queue: asyncio.Queue = asyncio.Queue()
@@ -237,7 +238,6 @@ class ClaudeProcess:
                 )
                 self.session_id = init.session_id
                 await self._event_queue.put(init)
-                log(f"Session initialized: {self.session_id}")
 
         elif event_type == "assistant":
             # Assistant message event

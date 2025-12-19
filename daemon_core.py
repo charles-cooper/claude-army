@@ -347,8 +347,20 @@ class Daemon:
 
     async def _on_system_init(self, task_name: str, event: SystemInit) -> None:
         """Handle system init event."""
-        log(f"System init: {task_name} (session={event.session_id})")
         registry = get_registry()
+
+        # Determine session type based on _init_received flag
+        process = self.process_manager.processes.get(task_name)
+        if process and not process._init_received:
+            # First init for this process
+            if process.resume_session_id:
+                log(f"Resumed session: {task_name} (session={event.session_id})")
+            else:
+                log(f"New session: {task_name} (session={event.session_id})")
+            process._init_received = True
+        else:
+            log(f"Existing session: {task_name} (session={event.session_id})")
+
         registry.update_task_session_tracking(task_name, session_id=event.session_id)
 
     async def _on_assistant_message(self, task_name: str, event: AssistantMessage) -> None:
