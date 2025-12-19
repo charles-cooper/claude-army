@@ -17,8 +17,6 @@
 - [ ] Operator should be able to update the CLAUDE.local.md template (maybe?)
 
 ## Session Management Commands
-- [x] /tmux - print tmux attach command for current task's session
-- [x] /show - dump tmux pane output
 - [ ] /clear-context - exit Claude and start new session without -r or -c (when Claude gets out of hand)
 - [ ] /status - report Claude session status (edit mode? pending permission? idle?)
 
