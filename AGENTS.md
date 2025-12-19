@@ -27,7 +27,7 @@ This is a Telegram integration for Claude Code that watches transcripts and send
 
 ## Design Principles
 
-- **100% Resource Correctness**: Never accept resource leakage, orphans, or zombies as acceptable. Every resource created (Telegram topics, tmux sessions, marker files) must be properly tracked and cleaned up. If an operation can fail partway through, design it so partial state is recoverable or rolled back.
+- **100% Resource Correctness**: Never accept resource leakage, orphans, or zombies as acceptable. Every resource created (Telegram topics, subprocesses, marker files) must be properly tracked and cleaned up. If an operation can fail partway through, design it so partial state is recoverable or rolled back.
 
 ## Critical Learnings
 
@@ -35,11 +35,6 @@ This is a Telegram integration for Claude Code that watches transcripts and send
 - Permission prompts use **arrow keys**, NOT text input (y/n doesn't work)
 - Default selection is "Yes" - just press Enter to allow
 - "Tell Claude something else" is the 3rd option - navigate with Down Down Enter
-
-### tmux send-keys
-- Text and Enter MUST be separate commands: `send-keys "text"` then `send-keys Enter`
-- Single command `send-keys "text" Enter` buffers text but doesn't submit
-- Clear input buffer with Ctrl-U before sending text (but not before arrow keys)
 
 ### Telegram API
 - Use `inline_keyboard` with `callback_data` for buttons

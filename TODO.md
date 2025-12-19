@@ -23,7 +23,7 @@
 - [ ] /status - report Claude session status (edit mode? pending permission? idle?)
 
 ## Operator Improvements
-- [ ] Operator should periodically dump tmux sessions / check logs to monitor work progress
+- [ ] Operator should periodically check registry / transcripts to monitor work progress
 - [ ] Operator should update its own CLAUDE.local.md with learnings about user and workflows
 
 ## Nice to Have

@@ -4,7 +4,7 @@ Manage an army of Claude instances.
 
 Get Telegram notifications when Claude Code needs your attention, and respond directly from Telegram.
 
-This is supposed to augment a tmux / git worktree based workflow (not replace it). It is expected that you may occasionally want to drop into a tmux session to debug or check on things!
+This is supposed to augment a git worktree based workflow. The daemon manages Claude subprocesses and handles permission prompts via Telegram.
 
 ## Features
 
@@ -26,7 +26,7 @@ Debug flow: reply to a message with `/debug` to get its debug info, then forward
 
 ## Requirements
 
-- Claude Code running inside a tmux session (the daemon uses tmux to inject keystrokes)
+- Claude Code CLI installed
 - Python 3 with `requests` library
 - A Telegram bot (see Installation)
 
@@ -104,8 +104,8 @@ To respond to notifications from Telegram, run the daemon:
 
 The daemon:
 - Polls Telegram for button clicks and text replies
-- Sends responses to Claude via tmux keystrokes
-- Requires Claude Code to be running in tmux
+- Manages Claude subprocesses with stream-json I/O
+- Handles permission prompts via HTTP server (localhost:9000)
 
 For background operation:
 
@@ -141,9 +141,7 @@ You'll be notified when:
 
 | Command | Handler | Description |
 |---------|---------|-------------|
-| `/dump` | Daemon | Dump recent tmux pane output for the current topic |
 | `/debug` | Daemon | Debug a message (reply to the message first) |
-| `/show-tmux-command` | Daemon | Show tmux attach command for the current topic's session |
 | `/spawn <description>` | Operator | Create a new task |
 | `/status` | Daemon | Quick list of tasks (instant, from registry) |
 | `/cleanup [task]` | Operator | Clean up a task (kill session, remove worktree if applicable) |
@@ -168,10 +166,13 @@ You'll be notified when:
 
 ## Architecture
 
-Two components work together:
+Three components work together:
 
-1. **telegram-hook.py** - Hook script invoked by Claude Code on events, sends notifications to Telegram
-2. **telegram-daemon.py** - Long-running daemon that polls Telegram and injects responses via tmux
+1. **permission_hook.py** - Hook script called by Claude CLI for permission decisions
+2. **telegram-daemon.py** - Long-running daemon that manages Claude subprocesses and polls Telegram
+3. **Permission server** - HTTP server on localhost:9000 that bridges hooks to Telegram
+
+The daemon spawns Claude processes with `--output-format stream-json --input-format stream-json` for programmatic I/O.
 
 ## Files
 

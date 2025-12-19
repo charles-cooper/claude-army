@@ -16,15 +16,15 @@
 - [ ] `/setup` again → works
 
 ## Phase 2: Operator
-- [ ] After `/setup`, tmux session `claude-operator` exists
-- [ ] Send message in General topic → routed to operator pane (typing indicator)
+- [ ] After `/setup`, operator subprocess starts
+- [ ] Send message in General topic → routed to operator (typing indicator)
 - [ ] Operator responds → appears in General topic
 - [ ] `/todo fix the bug` → sent to operator with [TODO] prefix
 - [ ] Reply to a message with `/debug` → debug info sent to operator
 
 ## Phase 3: Workers (requires operator to spawn)
 - [ ] Ask operator to create task → worktree created, topic created
-- [ ] Message in task topic → routed to worker pane
+- [ ] Message in task topic → routed to worker subprocess
 - [ ] Worker notification → appears in task topic
 - [ ] Permission prompt Allow/Deny buttons work
 
@@ -41,8 +41,8 @@
 - [ ] `.claude-army-setup.sh` in repo → runs after worktree creation
 
 ## Edge Cases
-- [ ] Kill operator tmux session → resurrects on next message
-- [ ] Kill worker tmux session → resurrects on next message to that topic
+- [ ] Kill operator subprocess → resurrects on next message
+- [ ] Kill worker subprocess → resurrects on next message to that topic
 - [ ] Daemon restart → picks up existing sessions
 - [ ] Multiple permission prompts → all show, handled correctly
 
