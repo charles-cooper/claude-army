@@ -107,6 +107,15 @@ class ClaudeProcess:
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._running = False
 
+    @property
+    def has_received_init(self) -> bool:
+        """Whether the system/init event has been received."""
+        return self._init_received
+
+    def mark_init_received(self) -> None:
+        """Mark that system/init event has been received."""
+        self._init_received = True
+
     async def start(self) -> bool:
         """Start the Claude subprocess.
 
@@ -325,6 +334,31 @@ class ClaudeProcess:
                 # End of stream
                 break
             yield event
+
+    async def drain_init(self, timeout: float = 120.0) -> tuple[SystemInit | None, SessionResult | None]:
+        """Drain events from init turn until SessionResult.
+
+        Reads events directly from queue before events() iterator is consumed.
+
+        Args:
+            timeout: Maximum seconds to wait for init turn to complete.
+
+        Returns:
+            Tuple of (SystemInit or None, SessionResult or None).
+        """
+        init_event = None
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    event = await self._event_queue.get()
+                    if event is None:
+                        return (init_event, None)
+                    if isinstance(event, SystemInit):
+                        init_event = event
+                    elif isinstance(event, SessionResult):
+                        return (init_event, event)
+        except asyncio.TimeoutError:
+            return (init_event, None)
 
     async def stop(self, timeout: float = 5.0) -> bool:
         """Stop the Claude subprocess gracefully.
