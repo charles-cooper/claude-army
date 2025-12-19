@@ -184,6 +184,53 @@ class ProcessManager:
         log(f"Resumed process: {task_name} (session={session_id})")
         return process
 
+    def register_process(
+        self,
+        task_name: str,
+        process: ClaudeProcess,
+        start_events: bool = True
+    ) -> None:
+        """Register an externally-started process.
+
+        Use this when you need fine-grained control over process startup
+        (e.g., draining init turn before starting event monitoring).
+
+        Args:
+            task_name: Unique task identifier
+            process: Already-started ClaudeProcess instance
+            start_events: If True, immediately start event monitoring.
+                         If False, call start_event_monitoring() later.
+
+        Raises:
+            ValueError: If task_name already exists
+        """
+        if task_name in self.processes:
+            raise ValueError(f"Process already exists: {task_name}")
+
+        self.processes[task_name] = process
+        if start_events:
+            self._start_event_task(task_name, process)
+
+    def start_event_monitoring(self, task_name: str) -> None:
+        """Start event monitoring for a registered process.
+
+        Call this after register_process(start_events=False) when ready
+        to begin receiving events.
+
+        Args:
+            task_name: Task identifier of registered process
+
+        Raises:
+            KeyError: If task_name not registered
+            ValueError: If event monitoring already started
+        """
+        if task_name not in self.processes:
+            raise KeyError(f"Process not registered: {task_name}")
+        if task_name in self._event_tasks:
+            raise ValueError(f"Event monitoring already started: {task_name}")
+
+        self._start_event_task(task_name, self.processes[task_name])
+
     async def send_to_process(
         self,
         task_name: str,
