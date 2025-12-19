@@ -136,15 +136,6 @@ class Config(ReloadableJSON):
     def general_topic_id(self, value: int):
         self.set("general_topic_id", value)
 
-    @property
-    def operator_pane(self) -> str | None:
-        """The tmux pane for operator Claude."""
-        return self._data.get("operator_pane")
-
-    @operator_pane.setter
-    def operator_pane(self, value: str):
-        self.set("operator_pane", value)
-
     def is_configured(self) -> bool:
         """Check if Claude Army is configured."""
         return self.group_id is not None
@@ -177,19 +168,65 @@ class Registry(ReloadableJSON):
 
     def __init__(self):
         self._path = REGISTRY_FILE
+        # Initialize indexes before super().__init__() calls _reload()
+        self._topic_index: dict[int, str] = {}      # topic_id -> task_name
+        self._session_index: dict[str, str] = {}    # session_id -> task_name
+        self._path_index: dict[str, str] = {}       # path -> task_name
         super().__init__()
         self._ensure_tasks_key()
 
     def _reload(self) -> bool:
-        """Override to ensure tasks key exists after reload."""
+        """Override to ensure tasks key exists and rebuild indexes after reload."""
         result = super()._reload()
         self._ensure_tasks_key()
+        self._rebuild_indexes()
         return result
 
     def _ensure_tasks_key(self):
         """Ensure cache has tasks dict."""
         if "tasks" not in self._cache:
             self._cache["tasks"] = {}
+
+    def _rebuild_indexes(self):
+        """Rebuild all indexes from current task data."""
+        self._topic_index.clear()
+        self._session_index.clear()
+        self._path_index.clear()
+
+        for name, task_data in self._cache.get("tasks", {}).items():
+            topic_id = task_data.get("topic_id")
+            if topic_id is not None:
+                self._topic_index[topic_id] = name
+            session_id = task_data.get("session_id")
+            if session_id is not None:
+                self._session_index[session_id] = name
+            path = task_data.get("path")
+            if path is not None:
+                self._path_index[path] = name
+
+    def _add_to_indexes(self, name: str, task_data: dict):
+        """Add task to all relevant indexes."""
+        topic_id = task_data.get("topic_id")
+        if topic_id is not None:
+            self._topic_index[topic_id] = name
+        session_id = task_data.get("session_id")
+        if session_id is not None:
+            self._session_index[session_id] = name
+        path = task_data.get("path")
+        if path is not None:
+            self._path_index[path] = name
+
+    def _remove_from_indexes(self, name: str, task_data: dict):
+        """Remove task from all relevant indexes."""
+        topic_id = task_data.get("topic_id")
+        if topic_id is not None and self._topic_index.get(topic_id) == name:
+            del self._topic_index[topic_id]
+        session_id = task_data.get("session_id")
+        if session_id is not None and self._session_index.get(session_id) == name:
+            del self._session_index[session_id]
+        path = task_data.get("path")
+        if path is not None and self._path_index.get(path) == name:
+            del self._path_index[path]
 
     @property
     def tasks(self) -> dict:
@@ -198,7 +235,11 @@ class Registry(ReloadableJSON):
 
     def add_task(self, name: str, task_data: dict):
         """Add or update a task."""
+        old_data = self._data["tasks"].get(name)
+        if old_data:
+            self._remove_from_indexes(name, old_data)
         self._data["tasks"][name] = task_data
+        self._add_to_indexes(name, task_data)
         self._flush()
 
     def get_task(self, name: str) -> dict | None:
@@ -208,6 +249,8 @@ class Registry(ReloadableJSON):
     def remove_task(self, name: str):
         """Remove a task from registry."""
         if name in self._data["tasks"]:
+            task_data = self._data["tasks"][name]
+            self._remove_from_indexes(name, task_data)
             del self._data["tasks"][name]
             self._flush()
 
@@ -215,30 +258,68 @@ class Registry(ReloadableJSON):
         """Get all tasks as list of (name, task_data)."""
         return list(self._data["tasks"].items())
 
+    def update_task_session_tracking(self, name: str, session_id: str | None = None,
+                                     pid: int | None = None, status: str | None = None):
+        """Update session tracking fields for a task.
+
+        Args:
+            name: Task name
+            session_id: Claude session ID for --resume
+            pid: Process ID (if running)
+            status: Task status ("active", "paused", "stopped")
+        """
+        task_data = self._data["tasks"].get(name)
+        if not task_data:
+            return
+
+        if session_id is not None:
+            # Remove old session_id from index
+            old_session_id = task_data.get("session_id")
+            if old_session_id is not None and old_session_id in self._session_index:
+                del self._session_index[old_session_id]
+            # Add new session_id to index
+            self._session_index[session_id] = name
+            task_data["session_id"] = session_id
+        if pid is not None:
+            task_data["pid"] = pid
+        if status is not None:
+            task_data["status"] = status
+
+        self._flush()
+
     def find_task_by_topic(self, topic_id: int) -> tuple[str, dict] | None:
-        """Find task by topic ID."""
-        for name, task_data in self._data["tasks"].items():
-            if task_data.get("topic_id") == topic_id:
-                return (name, task_data)
-        return None
+        """Find task by topic ID. O(1) using index."""
+        self._maybe_reload()
+        name = self._topic_index.get(topic_id)
+        if name is None:
+            return None
+        task_data = self._cache["tasks"].get(name)
+        return (name, task_data) if task_data else None
 
     def find_task_by_path(self, path: str) -> tuple[str, dict] | None:
-        """Find task by directory path."""
-        for name, task_data in self._data["tasks"].items():
-            if task_data.get("path") == path:
-                return (name, task_data)
-        return None
+        """Find task by directory path. O(1) using index."""
+        self._maybe_reload()
+        name = self._path_index.get(path)
+        if name is None:
+            return None
+        task_data = self._cache["tasks"].get(name)
+        return (name, task_data) if task_data else None
 
-    def find_task_by_pane(self, pane: str) -> tuple[str, dict] | None:
-        """Find task by tmux pane."""
-        for name, task_data in self._data["tasks"].items():
-            if task_data.get("pane") == pane:
-                return (name, task_data)
-        return None
+    def get_topic_for_session(self, session_id: str) -> int | None:
+        """Get topic_id for a session. O(1) using index."""
+        self._maybe_reload()
+        name = self._session_index.get(session_id)
+        if name is None:
+            return None
+        task_data = self._cache.get("tasks", {}).get(name)
+        return task_data.get("topic_id") if task_data else None
 
     def clear(self):
         """Clear all registry data."""
         self._cache = {"tasks": {}}
+        self._topic_index.clear()
+        self._session_index.clear()
+        self._path_index.clear()
         self._flush()
 
 

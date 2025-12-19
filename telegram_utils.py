@@ -6,9 +6,7 @@ import json
 import os
 import requests
 import shlex
-import subprocess
 import threading
-import time
 from pathlib import Path
 
 
@@ -97,6 +95,13 @@ def strip_home(path: str) -> str:
     return path.removeprefix(str(Path.home()) + "/")
 
 
+def escape_markdown_v1(text: str) -> str:
+    """Escape MarkdownV1 special chars in plain text."""
+    for char in ['\\', '_', '*', '`', '[']:
+        text = text.replace(char, '\\' + char)
+    return text
+
+
 def escape_markdown_v2(text: str) -> str:
     """Escape ALL MarkdownV2 special chars in plain text.
 
@@ -126,7 +131,7 @@ def format_tool_permission(tool_name: str, tool_input: dict, markdown_v2: bool =
         return f"{esc('Claude is asking permission to run:')}\n\n```bash\n{cmd}\n```{desc_line}"
 
     elif tool_name == "Edit":
-        fp = strip_home(tool_input.get("file_path", ""))
+        fp = tool_input.get("file_path", "")
         old = tool_input.get("old_string", "")
         new = tool_input.get("new_string", "")
         diff = "\n".join(
@@ -139,12 +144,12 @@ def format_tool_permission(tool_name: str, tool_input: dict, markdown_v2: bool =
         return f"{esc('Claude is asking permission to edit')} `{esc(fp)}`{esc(':')}\n\n```diff\n{diff}\n```"
 
     elif tool_name == "Write":
-        fp = strip_home(tool_input.get("file_path", ""))
+        fp = tool_input.get("file_path", "")
         content = tool_input.get("content", "").replace("```", "'''")
         return f"{esc('Claude is asking permission to write')} `{esc(fp)}`{esc(':')}\n\n```\n{content}\n```"
 
     elif tool_name == "Read":
-        fp = strip_home(tool_input.get("file_path", ""))
+        fp = tool_input.get("file_path", "")
         return f"{esc('Claude is asking permission to read')} `{esc(fp)}`"
 
     elif tool_name == "AskUserQuestion":
@@ -161,32 +166,6 @@ def format_tool_permission(tool_name: str, tool_input: dict, markdown_v2: bool =
     else:
         input_str = json.dumps(tool_input, indent=2).replace("```", "'''")
         return f"{esc('Claude is asking permission to use')} {esc(tool_name)}{esc(':')}\n\n```\n{input_str}\n```"
-
-
-def pane_exists(pane: str) -> bool:
-    """Check if a tmux pane exists."""
-    result = subprocess.run(
-        ["tmux", "has-session", "-t", pane],
-        capture_output=True
-    )
-    return result.returncode == 0
-
-
-def send_to_tmux_pane(pane: str, text: str) -> bool:
-    """Send text to a tmux pane. Clears line first, sends text, then Enter.
-
-    Returns True on success, False on failure (e.g., pane dead).
-    """
-    try:
-        subprocess.run(["tmux", "send-keys", "-t", pane, "C-u"], check=True)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", text], check=True)
-        # Longer text needs more time for TUI to process before Enter
-        delay = 0.1 + len(text) / 10000  # ~0.1s base + 0.1s per 1000 chars
-        time.sleep(delay)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-        return True
-    except subprocess.CalledProcessError:
-        return False
 
 
 def send_telegram(bot_token: str, chat_id: str, msg: str, tool_name: str = None, reply_markup: dict = None, parse_mode: str = "Markdown") -> dict | None:
@@ -227,15 +206,28 @@ def answer_callback(bot_token: str, callback_id: str, text: str = None):
     )
 
 
-def send_reply(bot_token: str, chat_id: str, reply_to_msg_id: int, text: str, parse_mode: str = None):
+def send_reply(bot_token: str, chat_id: str, reply_to_msg_id: int, text: str, parse_mode: str = None, topic_id: int = None):
     """Send a reply message on Telegram."""
     payload = {"chat_id": chat_id, "text": text, "reply_to_message_id": reply_to_msg_id}
     if parse_mode:
         payload["parse_mode"] = parse_mode
-    requests.post(
+    if topic_id:
+        payload["message_thread_id"] = topic_id
+    resp = requests.post(
         f"https://api.telegram.org/bot{bot_token}/sendMessage",
         json=payload
     )
+    # Retry without parse_mode on markdown errors
+    if resp.status_code == 400 and parse_mode and "can't parse entities" in resp.text:
+        log(f"send_reply: Markdown parse error, retrying without parse_mode")
+        del payload["parse_mode"]
+        resp = requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json=payload
+        )
+    if not resp.ok:
+        log(f"send_reply error: {resp.status_code} {resp.text[:200]}")
+    return resp.ok
 
 
 def update_message_buttons(bot_token: str, chat_id: str, msg_id: int, label: str):

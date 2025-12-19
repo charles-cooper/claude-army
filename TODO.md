@@ -17,13 +17,11 @@
 - [ ] Operator should be able to update the CLAUDE.local.md template (maybe?)
 
 ## Session Management Commands
-- [x] /tmux - print tmux attach command for current task's session
-- [x] /show - dump tmux pane output
 - [ ] /clear-context - exit Claude and start new session without -r or -c (when Claude gets out of hand)
 - [ ] /status - report Claude session status (edit mode? pending permission? idle?)
 
 ## Operator Improvements
-- [ ] Operator should periodically dump tmux sessions / check logs to monitor work progress
+- [ ] Operator should periodically check registry / transcripts to monitor work progress
 - [ ] Operator should update its own CLAUDE.local.md with learnings about user and workflows
 
 ## Nice to Have

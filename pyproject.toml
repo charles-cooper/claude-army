@@ -1,0 +1,34 @@
+[project]
+name = "claude-army"
+version = "0.1.0"
+description = "Claude Code Telegram notifications and multi-agent orchestration"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "pytest-asyncio>=0.23",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+omit = ["daemon.py", "bot_commands.py", "telegram-daemon.py", "session_operator.py", "session_worker.py"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:", "pass$"]

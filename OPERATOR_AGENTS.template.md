@@ -53,11 +53,8 @@ cat registry.json
 ```
 Current task registry - what's already running.
 
-### 6. Discover tmux Sessions
-```bash
-tmux list-sessions
-```
-See all active sessions. Claude Army uses `ca-` prefix (e.g., `ca-op`, `ca-taskname`).
+### 6. Check Running Processes
+The daemon manages Claude subprocesses. Check the registry to see active tasks and their session IDs.
 
 ## How Messages Arrive
 
@@ -71,58 +68,23 @@ Messages come from Telegram with metadata:
 - Other topic IDs are task topics (for workers)
 - Reply context is included when present
 
-## tmux Session Management
+## Subprocess Management
 
-### Session Naming Convention
-- `ca-op` - Operator session (you)
-- `ca-{taskname}` - Worker sessions
+Claude Army uses subprocesses with stream-json I/O instead of tmux sessions. The daemon manages all Claude processes via ProcessManager.
 
-### Essential Commands
+### Process Tracking
 
-**List all sessions:**
+Check the registry for active processes:
 ```bash
-tmux list-sessions
+cat registry.json | jq '.tasks | to_entries[] | {name: .key, session_id: .value.session_id, pid: .value.pid}'
 ```
 
-**List all panes with details:**
-```bash
-tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_current_path} #{pane_pid}'
-```
+### Key Concepts
 
-**Capture pane output (safe, non-blocking):**
-```bash
-# Last 100 lines
-tmux capture-pane -t ca-taskname -p -S -100
-
-# Entire scrollback
-tmux capture-pane -t ca-taskname -p -S -
-```
-
-**Send text to a session:**
-```bash
-# Clear line first, then send
-tmux send-keys -t ca-taskname C-u
-tmux send-keys -t ca-taskname -l "your message here"
-tmux send-keys -t ca-taskname Enter
-```
-
-**Check if session exists:**
-```bash
-tmux has-session -t ca-taskname 2>/dev/null && echo "exists" || echo "missing"
-```
-
-**Kill a session:**
-```bash
-tmux kill-session -t ca-taskname
-```
-
-### Best Practices
-
-1. **Never attach interactively** - Use `capture-pane` to read output without blocking
-2. **Always use `-l` for literal text** - Prevents special character interpretation
-3. **Clear before sending** - Use `C-u` to clear any partial input
-4. **Separate text and Enter** - Send keys in two commands: text first, then Enter
-5. **Check existence first** - Use `has-session` before sending to avoid errors
+1. **Session IDs**: Each Claude process has a session_id for resumption
+2. **PIDs**: Process IDs are tracked for monitoring
+3. **Resurrection**: Dead processes are resurrected via `claude --resume <session_id>`
+4. **Stream-JSON**: Communication via stdin/stdout JSON streams
 
 ## Claude Session Analysis
 
@@ -165,28 +127,28 @@ grep '"type":"assistant"' transcript.jsonl | jq '.message.content[] | select(.ty
 - `type: "assistant"` - Claude responses, tool_use
 - `type: "system", subtype: "compact_boundary"` - Context compaction markers
 
-### Correlating Panes to Transcripts
+### Correlating Tasks to Transcripts
 
 ```bash
-# Get pane's working directory
-tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_current_path}'
+# Get task path from registry
+cat registry.json | jq -r '.tasks["task-name"].path'
 
-# Working directory encodes to transcript path:
+# Path encodes to transcript path:
 # /home/user/myproject -> ~/.claude/projects/-home-user-myproject/
 ```
 
 ### Learning from Past Sessions
 
 To understand what a worker has done:
-1. Find its transcript path from pane's cwd
+1. Find its transcript path from registry task path
 2. Read recent entries to see current context
 3. Check for pending tool_use (needs permission)
 4. Look at assistant text for status
 
 ```bash
-# Quick status check for a session
-CWD=$(tmux display -t ca-taskname -p '#{pane_current_path}')
-ENCODED=$(echo "$CWD" | tr '/' '-')
+# Quick status check for a task
+TASK_PATH=$(cat registry.json | jq -r '.tasks["task-name"].path')
+ENCODED=$(echo "$TASK_PATH" | tr '/' '-')
 TRANSCRIPT=$(ls -t ~/.claude/projects/$ENCODED/*.jsonl 2>/dev/null | head -1)
 if [ -n "$TRANSCRIPT" ]; then
     tail -5 "$TRANSCRIPT" | jq -c 'select(.type=="assistant") | .message.content[] | select(.type=="text") | .text[:100]'

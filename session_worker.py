@@ -1,78 +1,57 @@
-"""Worker Claude session management.
+"""Worker Claude session management using ProcessManager.
 
 Supports two task types:
 - Worktree: isolated git worktree, cleanup deletes directory
 - Session: existing directory, cleanup preserves directory
 """
 
-import glob
+import asyncio
 import json
 import os
 import subprocess
-import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from telegram_utils import (
-    log, edit_forum_topic, create_forum_topic, close_forum_topic, delete_forum_topic,
-    shell_quote, TopicCreationError, send_to_tmux_pane, send_to_topic,
-    escape_markdown_v2, pane_exists
+    log, create_forum_topic, close_forum_topic, delete_forum_topic,
+    TopicCreationError, send_to_topic, escape_markdown_v2,
 )
 from registry import (
     get_config, get_registry, write_marker_file, read_marker_file,
     remove_marker_file, write_marker_file_pending
 )
 
+if TYPE_CHECKING:
+    from process_manager import ProcessManager
+    from claude_process import ClaudeProcess
 
-# Short prefix to avoid collisions with user sessions
-SESSION_PREFIX = "ca-"  # claude-army
 
 SETUP_HOOK_NAME = ".claude-army-setup.sh"
 DISCOVER_TRIGGER = Path("/tmp/claude-army-discover")
 
-CLAUDE_STARTUP_TIMEOUT = 15  # max seconds to wait for Claude to start
-CLAUDE_STARTUP_POLL_INTERVAL = 0.5  # seconds between polls
+
+# Global ProcessManager instance (set by daemon on startup)
+_process_manager: "ProcessManager | None" = None
 
 
-def _get_transcript_for_cwd(cwd: str) -> str | None:
-    """Find the most recent transcript file for a working directory."""
-    encoded = cwd.replace("/", "-")
-    pattern = str(Path.home() / f".claude/projects/{encoded}/*.jsonl")
-    transcripts = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
-    return transcripts[0] if transcripts else None
+def set_process_manager(pm: "ProcessManager") -> None:
+    """Set the global ProcessManager instance.
 
-
-def wait_for_claude_ready(cwd: str, timeout: float = CLAUDE_STARTUP_TIMEOUT) -> bool:
-    """Wait for Claude to be ready by watching for new transcript activity.
-
-    Returns True if Claude is ready, False if timeout.
+    Called by daemon on startup to share the ProcessManager.
     """
-    start = time.time()
-    initial_transcript = _get_transcript_for_cwd(cwd)
-    initial_size = os.path.getsize(initial_transcript) if initial_transcript else 0
+    global _process_manager
+    _process_manager = pm
 
-    while time.time() - start < timeout:
-        time.sleep(CLAUDE_STARTUP_POLL_INTERVAL)
-        transcript = _get_transcript_for_cwd(cwd)
-        if not transcript:
-            continue
 
-        # New transcript file created
-        if transcript != initial_transcript:
-            log(f"Claude ready: new transcript created")
-            return True
+def get_process_manager() -> "ProcessManager | None":
+    """Get the global ProcessManager instance."""
+    return _process_manager
 
-        # Existing transcript grew
-        try:
-            current_size = os.path.getsize(transcript)
-            if current_size > initial_size:
-                log(f"Claude ready: transcript activity detected")
-                return True
-        except OSError:
-            continue
 
-    log(f"Claude startup timeout after {timeout}s")
-    return False
+def trigger_daemon_discovery():
+    """Signal the daemon to discover new transcripts immediately."""
+    DISCOVER_TRIGGER.touch()
 
 
 CLAUDE_LOCAL_TEMPLATE = """# Task: {task_name}
@@ -93,11 +72,6 @@ CLAUDE_LOCAL_TEMPLATE = """# Task: {task_name}
 """
 
 
-def trigger_daemon_discovery():
-    """Signal the daemon to discover new transcripts immediately."""
-    DISCOVER_TRIGGER.touch()
-
-
 def create_claude_local_md(directory: str, task_name: str, description: str = ""):
     """Create CLAUDE.local.md in task directory if it doesn't exist."""
     path = Path(directory) / "CLAUDE.local.md"
@@ -113,13 +87,14 @@ def create_claude_local_md(directory: str, task_name: str, description: str = ""
 
 
 def append_todo(directory: str, item: str) -> bool:
-    """Append a todo item to TODO.local.md in the task directory.
+    """Append a todo item to .agent-files/TODO.md in the task directory.
 
-    Creates the file with header if it doesn't exist.
+    Creates the directory and file with header if they don't exist.
     Returns True on success, False on failure.
     """
-    path = Path(directory) / "TODO.local.md"
+    path = Path(directory) / ".agent-files" / "TODO.md"
     try:
+        path.parent.mkdir(exist_ok=True)
         if not path.exists():
             path.write_text("# TODO\n\n")
         with open(path, "a") as f:
@@ -137,105 +112,9 @@ def _get_bot_token() -> str:
     return tg_config["bot_token"]
 
 
-def _get_session_name(task_name: str) -> str:
-    """Get tmux session name for a task."""
-    return f"{SESSION_PREFIX}{task_name}"
-
-
-def _session_exists(session_name: str) -> bool:
-    """Check if a tmux session exists."""
-    result = subprocess.run(
-        ["tmux", "has-session", "-t", session_name],
-        capture_output=True
-    )
-    return result.returncode == 0
-
-
-def _get_pane_id(session_name: str) -> str | None:
-    """Get the pane ID for a session."""
-    result = subprocess.run(
-        ["tmux", "list-panes", "-t", session_name, "-F", "#{session_name}:#{window_index}.#{pane_index}"],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        return None
-    lines = result.stdout.strip().split("\n")
-    return lines[0] if lines else None
-
-
-def _find_pane_by_directory(directory: str) -> str | None:
-    """Find an existing tmux pane with this directory as cwd."""
-    result = subprocess.run(
-        ["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_current_path}"],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        return None
-
-    directory = os.path.realpath(directory)
-    for line in result.stdout.strip().split("\n"):
-        if not line:
-            continue
-        parts = line.split(" ", 1)
-        if len(parts) == 2:
-            pane, cwd = parts
-            if os.path.realpath(cwd) == directory:
-                return pane
-    return None
-
-
-def _create_tmux_session(session_name: str, directory: str) -> str | None:
-    """Create a tmux session in directory. Returns pane ID."""
-    result = subprocess.run(
-        ["tmux", "new-session", "-d", "-s", session_name, "-c", directory],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        log(f"Failed to create session: {result.stderr}")
-        return None
-
-    time.sleep(0.2)
-    return _get_pane_id(session_name)
-
-
-def _kill_tmux_session(session_name: str) -> bool:
-    """Kill a tmux session."""
-    if not _session_exists(session_name):
-        return True
-    result = subprocess.run(
-        ["tmux", "kill-session", "-t", session_name],
-        capture_output=True
-    )
-    return result.returncode == 0
-
-
-def _start_claude(pane: str, description: str, resume: bool = False):
-    """Start Claude in a pane.
-
-    If resume=False (new task), prompts Claude to summarize and wait for approval.
-    If resume=True, continues existing conversation or falls back to description.
-    """
-    if resume:
-        cmd = f"claude --continue || claude {shell_quote(description)}"
-    else:
-        confirm_prompt = (
-            f"New task: {description}\n\n"
-            "Please:\n"
-            "1. Summarize what you understand the task to be\n"
-            "2. Outline your planned approach\n"
-            "3. Wait for user confirmation before starting work"
-        )
-        cmd = f"claude {shell_quote(confirm_prompt)}"
-    subprocess.run(["tmux", "send-keys", "-t", pane, cmd, "Enter"])
-    # Give Claude a moment to create the transcript file, then signal daemon
-    time.sleep(0.5)
-    trigger_daemon_discovery()
-
-
 def update_topic_status(topic_id: int, task_name: str, status: str):
     """Update topic name to reflect task status."""
     # No status prefixes for now - topic name stays as task_name
-    # TODO: Could add status suffix like "(paused)" if desired
     pass
 
 
@@ -371,14 +250,19 @@ def delete_worktree(repo_path: str, worktree_path: str) -> bool:
 
 # ============ Task Spawning ============
 
-def spawn_worktree_task(repo_path: str, task_name: str, description: str) -> dict | None:
-    """Spawn a worktree task: create worktree, topic, marker, session.
+async def spawn_worktree_task_async(repo_path: str, task_name: str, description: str) -> dict | None:
+    """Spawn a worktree task: create worktree, topic, marker, process.
 
     Returns task_data dict on success, None on failure.
     """
     config = get_config()
     if not config.is_configured():
         log("Not configured")
+        return None
+
+    pm = get_process_manager()
+    if pm is None:
+        log("ProcessManager not initialized")
         return None
 
     registry = get_registry()
@@ -394,7 +278,7 @@ def spawn_worktree_task(repo_path: str, task_name: str, description: str) -> dic
         return None
 
     # Create topic with crash-safe pattern
-    welcome = f"🚀 *Task created*\n\n_{escape_markdown_v2(description)}_"
+    welcome = f"[rocket] *Task created*\n\n_{escape_markdown_v2(description)}_"
     try:
         topic_id = _create_task_topic_safely(
             directory=str(worktree_path),
@@ -408,22 +292,12 @@ def spawn_worktree_task(repo_path: str, task_name: str, description: str) -> dic
         delete_worktree(repo_path, str(worktree_path))
         raise
 
-    # Create tmux session
-    session_name = _get_session_name(task_name)
-    pane = _create_tmux_session(session_name, str(worktree_path))
-    if not pane:
-        bot_token = _get_bot_token()
-        close_forum_topic(bot_token, str(config.group_id), topic_id)
-        delete_worktree(repo_path, str(worktree_path))
-        return None
-
-    # Update registry
+    # Update registry before spawning process
     task_data = {
         "type": "worktree",
         "path": str(worktree_path),
         "repo": repo_path,
         "topic_id": topic_id,
-        "pane": pane,
         "status": "active",
     }
     registry.add_task(task_name, task_data)
@@ -431,21 +305,65 @@ def spawn_worktree_task(repo_path: str, task_name: str, description: str) -> dic
     # Create CLAUDE.local.md for the task
     create_claude_local_md(str(worktree_path), task_name, description)
 
-    # Start Claude
-    _start_claude(pane, description)
+    # Spawn Claude process with initial prompt
+    confirm_prompt = (
+        f"New task: {description}\n\n"
+        "Please:\n"
+        "1. Summarize what you understand the task to be\n"
+        "2. Outline your planned approach\n"
+        "3. Wait for user confirmation before starting work"
+    )
 
+    try:
+        process = await pm.spawn_process(
+            task_name=task_name,
+            cwd=str(worktree_path),
+            prompt=confirm_prompt,
+        )
+        # Update registry with session info
+        task_data["session_id"] = process.session_id
+        task_data["pid"] = process.pid
+        registry.add_task(task_name, task_data)
+    except Exception as e:
+        log(f"Failed to spawn process: {e}")
+        # Clean up on failure
+        bot_token = _get_bot_token()
+        close_forum_topic(bot_token, str(config.group_id), topic_id)
+        delete_worktree(repo_path, str(worktree_path))
+        registry.remove_task(task_name)
+        return None
+
+    trigger_daemon_discovery()
     log(f"Spawned worktree task: {task_name} at {worktree_path}")
     return task_data
 
 
-def spawn_session(directory: str, task_name: str, description: str) -> dict | None:
-    """Spawn a session task in existing directory: create topic, marker, session.
+def spawn_worktree_task(repo_path: str, task_name: str, description: str) -> dict | None:
+    """Spawn a worktree task (sync wrapper).
+
+    Returns task_data dict on success, None on failure.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        log("spawn_worktree_task called from async context - use spawn_worktree_task_async instead")
+        return None
+    except RuntimeError:
+        return asyncio.run(spawn_worktree_task_async(repo_path, task_name, description))
+
+
+async def spawn_session_async(directory: str, task_name: str, description: str) -> dict | None:
+    """Spawn a session task in existing directory: create topic, marker, process.
 
     Returns task_data dict on success, None on failure.
     """
     config = get_config()
     if not config.is_configured():
         log("Not configured")
+        return None
+
+    pm = get_process_manager()
+    if pm is None:
+        log("ProcessManager not initialized")
         return None
 
     if not Path(directory).exists():
@@ -459,8 +377,13 @@ def spawn_session(directory: str, task_name: str, description: str) -> dict | No
         log(f"Task already exists: {task_name}")
         return None
 
+    # Check if task is already running in ProcessManager
+    if pm.is_running(task_name):
+        log(f"Process already running for task: {task_name}")
+        return None
+
     # Create topic with crash-safe pattern
-    welcome = f"🚀 *Task created*\n\n_{escape_markdown_v2(description)}_"
+    welcome = f"[rocket] *Task created*\n\n_{escape_markdown_v2(description)}_"
     topic_id = _create_task_topic_safely(
         directory=directory,
         task_name=task_name,
@@ -469,26 +392,11 @@ def spawn_session(directory: str, task_name: str, description: str) -> dict | No
         welcome_message=welcome
     )
 
-    # Check for existing tmux pane in this directory
-    existing_pane = _find_pane_by_directory(directory)
-    if existing_pane:
-        log(f"Found existing pane {existing_pane} in {directory}, reusing")
-        pane = existing_pane
-    else:
-        # Create new tmux session
-        session_name = _get_session_name(task_name)
-        pane = _create_tmux_session(session_name, directory)
-        if not pane:
-            bot_token = _get_bot_token()
-            close_forum_topic(bot_token, str(config.group_id), topic_id)
-            return None
-
     # Update registry
     task_data = {
         "type": "session",
         "path": directory,
         "topic_id": topic_id,
-        "pane": pane,
         "status": "active",
     }
     registry.add_task(task_name, task_data)
@@ -496,12 +404,48 @@ def spawn_session(directory: str, task_name: str, description: str) -> dict | No
     # Create CLAUDE.local.md for the task
     create_claude_local_md(directory, task_name, description)
 
-    # Only start Claude if we created a new session
-    if not existing_pane:
-        _start_claude(pane, description)
+    # Spawn Claude process
+    confirm_prompt = (
+        f"New task: {description}\n\n"
+        "Please:\n"
+        "1. Summarize what you understand the task to be\n"
+        "2. Outline your planned approach\n"
+        "3. Wait for user confirmation before starting work"
+    )
 
+    try:
+        process = await pm.spawn_process(
+            task_name=task_name,
+            cwd=directory,
+            prompt=confirm_prompt,
+        )
+        # Update registry with session info
+        task_data["session_id"] = process.session_id
+        task_data["pid"] = process.pid
+        registry.add_task(task_name, task_data)
+    except Exception as e:
+        log(f"Failed to spawn process: {e}")
+        bot_token = _get_bot_token()
+        close_forum_topic(bot_token, str(config.group_id), topic_id)
+        registry.remove_task(task_name)
+        return None
+
+    trigger_daemon_discovery()
     log(f"Spawned session: {task_name} at {directory}")
     return task_data
+
+
+def spawn_session(directory: str, task_name: str, description: str) -> dict | None:
+    """Spawn a session task in existing directory (sync wrapper).
+
+    Returns task_data dict on success, None on failure.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        log("spawn_session called from async context - use spawn_session_async instead")
+        return None
+    except RuntimeError:
+        return asyncio.run(spawn_session_async(directory, task_name, description))
 
 
 def register_existing_session(directory: str, task_name: str) -> dict | None:
@@ -542,7 +486,7 @@ def register_existing_session(directory: str, task_name: str) -> dict | None:
             return None
 
     # Create topic with crash-safe pattern
-    welcome = escape_markdown_v2("📡 Session discovered")
+    welcome = escape_markdown_v2("[satellite] Session discovered")
     topic_id = _create_task_topic_safely(
         directory=directory,
         task_name=task_name,
@@ -569,17 +513,36 @@ def register_existing_session(directory: str, task_name: str) -> dict | None:
 
 # ============ Task Operations ============
 
-def stop_task_session(task_name: str) -> bool:
-    """Stop the tmux session for a task."""
-    session_name = _get_session_name(task_name)
-    if _kill_tmux_session(session_name):
-        log(f"Stopped session: {session_name}")
+async def stop_task_session_async(task_name: str) -> bool:
+    """Stop the process for a task."""
+    pm = get_process_manager()
+    if pm is None:
         return True
-    return False
+
+    if not pm.is_running(task_name):
+        return True
+
+    try:
+        await pm.stop_process(task_name)
+        log(f"Stopped process: {task_name}")
+        return True
+    except Exception as e:
+        log(f"Failed to stop process: {e}")
+        return False
 
 
-def pause_task(task_name: str) -> bool:
-    """Pause a task (stop session, mark as paused)."""
+def stop_task_session(task_name: str) -> bool:
+    """Stop the process for a task (sync wrapper)."""
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(stop_task_session_async(task_name))
+        return True
+    except RuntimeError:
+        return asyncio.run(stop_task_session_async(task_name))
+
+
+async def pause_task_async(task_name: str) -> bool:
+    """Pause a task (stop process, mark as paused)."""
     registry = get_registry()
     task_data = registry.get_task(task_name)
     if not task_data:
@@ -588,8 +551,8 @@ def pause_task(task_name: str) -> bool:
     topic_id = task_data.get("topic_id")
     path = task_data.get("path")
 
-    # Stop session
-    stop_task_session(task_name)
+    # Stop process
+    await stop_task_session_async(task_name)
 
     # Update marker
     marker = read_marker_file(path)
@@ -597,9 +560,9 @@ def pause_task(task_name: str) -> bool:
         marker["status"] = "paused"
         write_marker_file(path, marker)
 
-    # Update registry
+    # Update registry - remove pid since process is stopped
     task_data["status"] = "paused"
-    task_data.pop("pane", None)
+    task_data.pop("pid", None)
     registry.add_task(task_name, task_data)
 
     # Update topic name
@@ -610,8 +573,23 @@ def pause_task(task_name: str) -> bool:
     return True
 
 
-def resume_task(task_name: str) -> str | None:
-    """Resume a paused task. Returns pane ID on success."""
+def pause_task(task_name: str) -> bool:
+    """Pause a task (sync wrapper)."""
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(pause_task_async(task_name))
+        return True
+    except RuntimeError:
+        return asyncio.run(pause_task_async(task_name))
+
+
+async def resume_task_async(task_name: str) -> str | None:
+    """Resume a paused task. Returns process identifier on success."""
+    pm = get_process_manager()
+    if pm is None:
+        log("ProcessManager not initialized")
+        return None
+
     registry = get_registry()
     task_data = registry.get_task(task_name)
     if not task_data:
@@ -619,6 +597,7 @@ def resume_task(task_name: str) -> str | None:
 
     path = task_data.get("path")
     topic_id = task_data.get("topic_id")
+    session_id = task_data.get("session_id")
 
     # Update marker
     marker = read_marker_file(path)
@@ -626,37 +605,60 @@ def resume_task(task_name: str) -> str | None:
         marker["status"] = "active"
         write_marker_file(path, marker)
 
-    # Create session (handle race where session already exists)
-    session_name = _get_session_name(task_name)
-    pane = _create_tmux_session(session_name, path)
-    session_already_existed = False
-    if not pane:
-        # Session might already exist (race condition) - check and use if so
-        if _session_exists(session_name):
-            pane = _get_pane_id(session_name)
-            session_already_existed = True
-        if not pane:
-            return None
+    # Check if already running
+    if pm.is_running(task_name):
+        log(f"Task already running: {task_name}")
+        task_data["status"] = "active"
+        registry.add_task(task_name, task_data)
+        return task_name
 
-    # Only start Claude if we created the session (avoid double-start on race)
-    if not session_already_existed:
-        description = marker.get("description", task_name) if marker else task_name
-        _start_claude(pane, description, resume=True)
+    # Resume or spawn process
+    try:
+        if session_id:
+            # Resume existing session
+            process = await pm.resume_process(
+                task_name=task_name,
+                cwd=path,
+                session_id=session_id,
+            )
+        else:
+            # No session to resume - spawn new with description
+            description = marker.get("description", task_name) if marker else task_name
+            process = await pm.spawn_process(
+                task_name=task_name,
+                cwd=path,
+                prompt=f"Resuming task: {description}",
+            )
+            task_data["session_id"] = process.session_id
 
-    # Update registry
-    task_data["status"] = "active"
-    task_data["pane"] = pane
-    registry.add_task(task_name, task_data)
+        task_data["pid"] = process.pid
+        task_data["status"] = "active"
+        registry.add_task(task_name, task_data)
+
+    except Exception as e:
+        log(f"Failed to resume task {task_name}: {e}")
+        return None
 
     # Update topic name
     if topic_id:
         update_topic_status(topic_id, task_name, "active")
 
+    trigger_daemon_discovery()
     log(f"Resumed task: {task_name}")
-    return pane
+    return task_name
 
 
-def cleanup_task(task_name: str, archive_only: bool = False) -> bool:
+def resume_task(task_name: str) -> str | None:
+    """Resume a paused task (sync wrapper). Returns process identifier on success."""
+    try:
+        loop = asyncio.get_running_loop()
+        log("resume_task called from async context - use resume_task_async instead")
+        return None
+    except RuntimeError:
+        return asyncio.run(resume_task_async(task_name))
+
+
+async def cleanup_task_async(task_name: str, archive_only: bool = False) -> bool:
     """Clean up a task. Behavior differs by type:
     - worktree: delete directory + delete topic
     - session: remove marker + delete topic (preserve directory)
@@ -673,8 +675,8 @@ def cleanup_task(task_name: str, archive_only: bool = False) -> bool:
     topic_id = task_data.get("topic_id")
     repo = task_data.get("repo")
 
-    # Stop session
-    stop_task_session(task_name)
+    # Stop process
+    await stop_task_session_async(task_name)
 
     # Delete or close topic
     if topic_id:
@@ -702,40 +704,46 @@ def cleanup_task(task_name: str, archive_only: bool = False) -> bool:
     return True
 
 
+def cleanup_task(task_name: str, archive_only: bool = False) -> bool:
+    """Clean up a task (sync wrapper)."""
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(cleanup_task_async(task_name, archive_only))
+        return True
+    except RuntimeError:
+        return asyncio.run(cleanup_task_async(task_name, archive_only))
+
+
 # ============ Worker Communication ============
 
-def get_worker_pane_for_topic(topic_id: int) -> str | None:
-    """Get the worker pane for a topic ID."""
+def get_worker_process_for_topic(topic_id: int) -> str | None:
+    """Get the worker process identifier for a topic ID."""
     registry = get_registry()
     result = registry.find_task_by_topic(topic_id)
     if result:
         name, task_data = result
-        return task_data.get("pane")
+        # Return task_name as process identifier if active
+        if task_data.get("status") != "paused":
+            return name
     return None
 
 
-def _find_pane_by_cwd(cwd: str) -> str | None:
-    """Find a tmux pane with the given working directory."""
-    try:
-        result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_current_path}"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            return None
-        for line in result.stdout.strip().split("\n"):
-            if not line:
-                continue
-            parts = line.split(" ", 1)
-            if len(parts) == 2 and parts[1] == cwd:
-                return parts[0]
-    except Exception:
-        pass
-    return None
+# Legacy alias for compatibility
+def get_worker_pane_for_topic(topic_id: int) -> str | None:
+    """Get the worker pane/process for a topic ID.
+
+    This is a compatibility alias - returns task_name as identifier.
+    """
+    return get_worker_process_for_topic(topic_id)
 
 
-def send_to_worker(topic_id: int, text: str) -> bool:
+async def send_to_worker_async(topic_id: int, text: str) -> bool:
     """Send text to the worker handling a topic. Resurrects if needed."""
+    pm = get_process_manager()
+    if pm is None:
+        log("ProcessManager not initialized")
+        return False
+
     registry = get_registry()
     config = get_config()
     result = registry.find_task_by_topic(topic_id)
@@ -744,23 +752,19 @@ def send_to_worker(topic_id: int, text: str) -> bool:
         return False
 
     task_name, task_data = result
-    pane = task_data.get("pane")
     path = task_data.get("path")
 
-    # Check if stored pane exists
-    if pane and pane_exists(pane):
-        return send_to_tmux_pane(pane, text)
+    # Check if process is running
+    if pm.is_running(task_name):
+        try:
+            await pm.send_to_process(task_name, text)
+            log(f"send_to_worker: task={task_name}, text_len={len(text)}")
+            return True
+        except Exception as e:
+            log(f"Failed to send to {task_name}: {e}")
+            # Fall through to resurrection
 
-    # Stored pane doesn't exist - try to find by cwd
-    if path:
-        discovered_pane = _find_pane_by_cwd(path)
-        if discovered_pane:
-            log(f"Discovered pane {discovered_pane} for task {task_name} (was {pane})")
-            task_data["pane"] = discovered_pane
-            registry.add_task(task_name, task_data)
-            return send_to_tmux_pane(discovered_pane, text)
-
-    # No existing pane found - need to resurrect
+    # Process not running - check if paused
     if task_data.get("status") == "paused":
         log(f"Task {task_name} is paused, not resurrecting")
         return False
@@ -769,41 +773,84 @@ def send_to_worker(topic_id: int, text: str) -> bool:
     bot_token = _get_bot_token()
     if bot_token and config.group_id:
         send_to_topic(bot_token, str(config.group_id), topic_id,
-                      escape_markdown_v2(f"⚠️ Session not found, recreating {task_name}..."))
+                      escape_markdown_v2(f"[warning] Session not found, recreating {task_name}..."))
 
-    pane = resume_task(task_name)
-    if not pane:
-        log(f"Failed to get pane for topic {topic_id}")
+    # Resume the task
+    process_id = await resume_task_async(task_name)
+    if not process_id:
+        log(f"Failed to resume task for topic {topic_id}")
         if bot_token and config.group_id:
             send_to_topic(bot_token, str(config.group_id), topic_id,
-                          escape_markdown_v2(f"❌ Failed to recreate {task_name}"))
+                          escape_markdown_v2(f"[x] Failed to recreate {task_name}"))
         return False
 
-    # Wait for Claude to be ready before sending message
-    if path and wait_for_claude_ready(path):
+    # Wait a moment for process to be ready
+    await asyncio.sleep(0.5)
+
+    # Now send the message
+    try:
+        await pm.send_to_process(task_name, text)
         if bot_token and config.group_id:
             send_to_topic(bot_token, str(config.group_id), topic_id,
-                          escape_markdown_v2(f"✅ Session recreated, forwarding message"))
-    else:
+                          escape_markdown_v2(f"[checkmark] Session recreated, forwarding message"))
+        return True
+    except Exception as e:
+        log(f"Failed to send to resurrected {task_name}: {e}")
         if bot_token and config.group_id:
             send_to_topic(bot_token, str(config.group_id), topic_id,
-                          escape_markdown_v2(f"⚠️ Session recreated (Claude may not be ready)"))
+                          escape_markdown_v2(f"[warning] Session recreated but message failed"))
+        return False
 
-    return send_to_tmux_pane(pane, text)
+
+def send_to_worker(topic_id: int, text: str) -> bool:
+    """Send text to the worker handling a topic (sync wrapper)."""
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(send_to_worker_async(topic_id, text))
+        return True
+    except RuntimeError:
+        return asyncio.run(send_to_worker_async(topic_id, text))
 
 
-def is_worker_pane(pane: str) -> tuple[bool, int | None]:
-    """Check if pane is a worker pane. Returns (is_worker, topic_id)."""
+def is_worker_process(task_name: str) -> tuple[bool, int | None]:
+    """Check if a task is a worker process. Returns (is_worker, topic_id)."""
     registry = get_registry()
-    result = registry.find_task_by_pane(pane)
-    if result:
-        name, task_data = result
+    task_data = registry.get_task(task_name)
+    if task_data:
         return True, task_data.get("topic_id")
     return False, None
 
 
-def check_and_resurrect_task(task_name: str) -> str | None:
-    """Check if task session exists, resurrect if needed. Returns pane ID."""
+def is_worker_pane(pane_or_task: str) -> tuple[bool, int | None]:
+    """Check if a pane/task identifier is a worker. Returns (is_worker, topic_id).
+
+    This is a compatibility function - in the new architecture, task_names
+    are used as identifiers instead of tmux panes.
+
+    For backwards compatibility, this searches by task_name first, then by
+    checking if any task has this value as a pane.
+    """
+    registry = get_registry()
+
+    # Try as task_name first
+    task_data = registry.get_task(pane_or_task)
+    if task_data:
+        return True, task_data.get("topic_id")
+
+    # Legacy: search by pane field (for compatibility during migration)
+    for name, data in registry.get_all_tasks():
+        if data.get("pane") == pane_or_task:
+            return True, data.get("topic_id")
+
+    return False, None
+
+
+async def check_and_resurrect_task_async(task_name: str) -> str | None:
+    """Check if task process exists, resurrect if needed. Returns process identifier."""
+    pm = get_process_manager()
+    if pm is None:
+        return None
+
     registry = get_registry()
     task_data = registry.get_task(task_name)
     if not task_data:
@@ -812,13 +859,23 @@ def check_and_resurrect_task(task_name: str) -> str | None:
     if task_data.get("status") == "paused":
         return None
 
-    session_name = _get_session_name(task_name)
-    if _session_exists(session_name):
-        pane = _get_pane_id(session_name)
-        if pane and pane != task_data.get("pane"):
-            task_data["pane"] = pane
-            registry.add_task(task_name, task_data)
-        return pane
+    # Check if running in ProcessManager
+    if pm.is_running(task_name):
+        return task_name
 
-    log(f"Session missing, resurrecting: {task_name}")
-    return resume_task(task_name)
+    # Not running - resurrect
+    log(f"Process missing, resurrecting: {task_name}")
+    return await resume_task_async(task_name)
+
+
+def check_and_resurrect_task(task_name: str) -> str | None:
+    """Check if task process exists, resurrect if needed (sync wrapper)."""
+    try:
+        loop = asyncio.get_running_loop()
+        log("check_and_resurrect_task called from async context - use async version")
+        pm = get_process_manager()
+        if pm and pm.is_running(task_name):
+            return task_name
+        return None
+    except RuntimeError:
+        return asyncio.run(check_and_resurrect_task_async(task_name))

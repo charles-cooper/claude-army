@@ -1,5 +1,9 @@
 #!/bin/bash
-# Install Claude Code Telegram notifications
+# Install Claude Army hooks
+#
+# Installs:
+#   - PreToolUse hook for permission management (permission_hook.py)
+#   - Notification/Compact hooks for Telegram (telegram-hook.py)
 #
 # Merges hooks into ~/.claude/settings.json, preserving existing hooks.
 # Safe to run multiple times - won't duplicate hooks.
@@ -10,8 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_FILE="$HOME/telegram.json"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 
-echo "Claude Code Telegram Notifications - Install"
-echo "============================================="
+echo "Claude Army - Install"
+echo "====================="
 echo
 
 # Check for requests
@@ -58,7 +62,8 @@ echo "Installing Claude Code hooks..."
 
 mkdir -p "$HOME/.claude"
 
-HOOK_CMD="python3 $SCRIPT_DIR/telegram-hook.py"
+TELEGRAM_HOOK_CMD="python3 $SCRIPT_DIR/telegram-hook.py"
+PERMISSION_HOOK_CMD="$SCRIPT_DIR/permission_hook.py"
 
 if [ -f "$SETTINGS_FILE" ]; then
     # Merge with existing settings
@@ -71,25 +76,42 @@ settings = json.loads(settings_file.read_text())
 
 hooks = settings.setdefault("hooks", {})
 
-# Notification hooks
+# PreToolUse hook for permission management
+pretooluse_hooks = hooks.setdefault("PreToolUse", [])
+perm_entry = {
+    "matcher": "*",
+    "hooks": [{"type": "command", "command": "$PERMISSION_HOOK_CMD", "timeout": 300}]
+}
+# Check if hook with same command already exists
+if not any(
+    h.get("matcher") == "*" and
+    any(hh.get("command") == "$PERMISSION_HOOK_CMD" for hh in h.get("hooks", []))
+    for h in pretooluse_hooks
+):
+    pretooluse_hooks.append(perm_entry)
+    print("Installed PreToolUse permission hook.")
+else:
+    print("PreToolUse permission hook already installed.")
+
+# Notification hooks (telegram)
 notif_hooks = hooks.setdefault("Notification", [])
 for matcher in ["permission_prompt"]:
-    entry = {"matcher": matcher, "hooks": [{"type": "command", "command": "$HOOK_CMD"}]}
-    if not any(h.get("matcher") == matcher and h.get("hooks", [{}])[0].get("command") == "$HOOK_CMD" for h in notif_hooks):
+    entry = {"matcher": matcher, "hooks": [{"type": "command", "command": "$TELEGRAM_HOOK_CMD"}]}
+    if not any(h.get("matcher") == matcher and h.get("hooks", [{}])[0].get("command") == "$TELEGRAM_HOOK_CMD" for h in notif_hooks):
         notif_hooks.append(entry)
 
 # PreCompact hooks (auto and manual)
 precompact_hooks = hooks.setdefault("PreCompact", [])
 for matcher in ["auto", "manual"]:
-    entry = {"matcher": matcher, "hooks": [{"type": "command", "command": "$HOOK_CMD"}]}
-    if not any(h.get("matcher") == matcher and h.get("hooks", [{}])[0].get("command") == "$HOOK_CMD" for h in precompact_hooks):
+    entry = {"matcher": matcher, "hooks": [{"type": "command", "command": "$TELEGRAM_HOOK_CMD"}]}
+    if not any(h.get("matcher") == matcher and h.get("hooks", [{}])[0].get("command") == "$TELEGRAM_HOOK_CMD" for h in precompact_hooks):
         precompact_hooks.append(entry)
 
 # PostCompact hooks (auto and manual)
 postcompact_hooks = hooks.setdefault("PostCompact", [])
 for matcher in ["auto", "manual"]:
-    entry = {"matcher": matcher, "hooks": [{"type": "command", "command": "$HOOK_CMD"}]}
-    if not any(h.get("matcher") == matcher and h.get("hooks", [{}])[0].get("command") == "$HOOK_CMD" for h in postcompact_hooks):
+    entry = {"matcher": matcher, "hooks": [{"type": "command", "command": "$TELEGRAM_HOOK_CMD"}]}
+    if not any(h.get("matcher") == matcher and h.get("hooks", [{}])[0].get("command") == "$TELEGRAM_HOOK_CMD" for h in postcompact_hooks):
         postcompact_hooks.append(entry)
 
 settings_file.write_text(json.dumps(settings, indent=2))
@@ -100,13 +122,25 @@ else
     cat > "$SETTINGS_FILE" << EOF
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$PERMISSION_HOOK_CMD",
+            "timeout": 300
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "permission_prompt",
         "hooks": [
           {
             "type": "command",
-            "command": "$HOOK_CMD"
+            "command": "$TELEGRAM_HOOK_CMD"
           }
         ]
       }
@@ -117,7 +151,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "$HOOK_CMD"
+            "command": "$TELEGRAM_HOOK_CMD"
           }
         ]
       },
@@ -126,7 +160,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "$HOOK_CMD"
+            "command": "$TELEGRAM_HOOK_CMD"
           }
         ]
       }
@@ -137,7 +171,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "$HOOK_CMD"
+            "command": "$TELEGRAM_HOOK_CMD"
           }
         ]
       },
@@ -146,7 +180,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "$HOOK_CMD"
+            "command": "$TELEGRAM_HOOK_CMD"
           }
         ]
       }
@@ -158,8 +192,9 @@ EOF
 fi
 
 echo
-echo "Done! You'll now receive Telegram notifications when:"
-echo "  - Claude asks for permission (Bash, Edit, Write)"
-echo "  - Claude compacts context (both auto and manual)"
+echo "Done! Installed:"
+echo "  - PreToolUse hook for permission management (permission_hook.py)"
+echo "  - Notification hooks for Telegram alerts (telegram-hook.py)"
+echo "  - Compact hooks for context compaction alerts"
 echo
-echo "Test by running Claude and triggering a permission prompt."
+echo "Run 'uninstall.sh' to remove hooks."

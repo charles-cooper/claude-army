@@ -10,3 +10,5 @@ operator/
 .claude/
 
 scratch/
+
+.coverage
