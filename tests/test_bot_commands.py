@@ -723,3 +723,190 @@ class TestHandleStop:
             assert "my_task" in call_args[3]
             mock_pm.is_running.assert_called_with("my_task")
             mock_create_task.assert_called_once()
+
+
+class TestHandleConnect:
+    """Tests for /connect command."""
+
+    def test_connect_no_task_in_topic(self, temp_dir, mock_config):
+        """Test /connect from topic with no task."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_config.general_topic_id = 1
+
+        mock_registry = MagicMock()
+        mock_registry.find_task_by_topic.return_value = None
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {})
+            msg = {
+                "text": "/connect",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": 999  # Unknown topic
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "No task in this topic" in call_args[3]
+
+    def test_connect_success(self, temp_dir, mock_config, mock_registry):
+        """Test /connect with valid task."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_registry.tasks = {
+            "my_task": {
+                "topic_id": 456,
+                "session_id": "ses_abc123",
+                "path": "/home/user/project"
+            }
+        }
+        mock_config.general_topic_id = 1
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {})
+            msg = {
+                "text": "/connect",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": 456
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "cd /home/user/project" in call_args[3]
+            assert "claude --resume ses_abc123" in call_args[3]
+
+    def test_connect_no_session_id(self, temp_dir, mock_config, mock_registry):
+        """Test /connect when task has no session_id."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_registry.tasks = {
+            "my_task": {
+                "topic_id": 456,
+                "path": "/home/user/project"
+                # No session_id
+            }
+        }
+        mock_config.general_topic_id = 1
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {})
+            msg = {
+                "text": "/connect",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": 456
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "has no active session" in call_args[3]
+
+    def test_connect_no_path(self, temp_dir, mock_config, mock_registry):
+        """Test /connect when task has no path."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_registry.tasks = {
+            "my_task": {
+                "topic_id": 456,
+                "session_id": "ses_abc123"
+                # No path
+            }
+        }
+        mock_config.general_topic_id = 1
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {})
+            msg = {
+                "text": "/connect",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": 456
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "has no path recorded" in call_args[3]
+
+    def test_connect_infers_task_from_topic(self, temp_dir, mock_config, mock_registry):
+        """Test /connect infers task from topic."""
+        reset_singletons()
+
+        config_path = Path(temp_dir) / "config.json"
+        registry_path = Path(temp_dir) / "registry.json"
+
+        mock_registry.tasks = {
+            "my_task": {
+                "topic_id": 456,
+                "session_id": "ses_xyz789",
+                "path": "/tmp/work"
+            }
+        }
+        mock_config.general_topic_id = 1
+
+        with patch("registry.CONFIG_FILE", config_path), \
+             patch("registry.REGISTRY_FILE", registry_path), \
+             patch("registry.CLAUDE_ARMY_DIR", Path(temp_dir)), \
+             patch("bot_commands.get_config", return_value=mock_config), \
+             patch("bot_commands.get_registry", return_value=mock_registry), \
+             patch("bot_commands.send_reply") as mock_reply:
+
+            handler = CommandHandler("TOKEN", "-1001234567890", {})
+            msg = {
+                "text": "/connect",
+                "message_id": 1,
+                "chat": {"id": -1001234567890},
+                "message_thread_id": 456
+            }
+
+            result = handler.handle_command(msg)
+            assert result is True
+            mock_reply.assert_called_once()
+            call_args = mock_reply.call_args[0]
+            assert "cd /tmp/work" in call_args[3]
+            assert "claude --resume ses_xyz789" in call_args[3]

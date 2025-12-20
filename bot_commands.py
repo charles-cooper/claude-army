@@ -257,6 +257,11 @@ class CommandHandler:
             self._handle_stop(msg, chat_id, msg_id, text, topic_id)
             return True
 
+        # /connect - print CLI command to connect to task's session
+        if text_lower.startswith("/connect"):
+            self._handle_connect(msg, chat_id, msg_id, text, topic_id)
+            return True
+
         return False
 
     def _handle_todo(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
@@ -541,6 +546,37 @@ class CommandHandler:
         else:
             self._reply(chat_id, msg_id, "Operator not available")
 
+    def _handle_connect(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
+        """Handle /connect - print CLI command to connect to task's session."""
+        task_name = self._get_task_name_for_topic(topic_id)
+
+        if not task_name:
+            self._reply(chat_id, msg_id, "No task in this topic.")
+            return
+
+        registry = get_registry()
+        task_data = registry.get_task(task_name) if task_name != "operator" else None
+
+        # For operator, get from config
+        if task_name == "operator":
+            config = get_config()
+            session_id = config.get("operator_session_id")
+            path = config.get("operator_path")
+        else:
+            session_id = task_data.get("session_id") if task_data else None
+            path = task_data.get("path") if task_data else None
+
+        if not session_id:
+            self._reply(chat_id, msg_id, f"Task `{task_name}` has no active session.")
+            return
+
+        if not path:
+            self._reply(chat_id, msg_id, f"Task `{task_name}` has no path recorded.")
+            return
+
+        cmd = f"cd {path} && claude --resume {session_id}"
+        self._reply(chat_id, msg_id, f"```\n{cmd}\n```")
+
     def _handle_stop(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /stop - stop current task's Claude process."""
         task_name = parse_command_args(text)
@@ -654,6 +690,7 @@ class CommandHandler:
 /spawn <desc> - Create a new task
 /cleanup - Clean up current task
 /stop [task] - Stop task's Claude process
+/connect - Print CLI command to connect to session
 /todo <item> - Add todo to task or operator
 /operator [msg] - Request operator intervention for task
 /summarize - Have operator summarize all tasks
