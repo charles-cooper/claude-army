@@ -669,6 +669,8 @@ class TestHandleStop:
              patch("bot_commands.send_reply") as mock_reply, \
              patch("bot_commands.asyncio.create_task") as mock_create_task:
 
+            mock_create_task.side_effect = lambda coro: coro.close()
+
             handler = CommandHandler("TOKEN", "-1001234567890", {}, process_manager=mock_pm)
             msg = {
                 "text": "/stop my_task",
@@ -706,6 +708,8 @@ class TestHandleStop:
              patch("bot_commands.get_registry", return_value=mock_registry), \
              patch("bot_commands.send_reply") as mock_reply, \
              patch("bot_commands.asyncio.create_task") as mock_create_task:
+
+            mock_create_task.side_effect = lambda coro: coro.close()
 
             handler = CommandHandler("TOKEN", "-1001234567890", {}, process_manager=mock_pm)
             msg = {
