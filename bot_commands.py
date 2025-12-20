@@ -3,6 +3,8 @@
 import asyncio
 import datetime
 import json
+import time
+from typing import Callable
 
 from telegram_utils import (
     State, send_reply, send_chat_action, log, is_forum_enabled, escape_markdown_v1
@@ -144,23 +146,25 @@ def build_operator_intervention_prompt(task_name: str, task_data: dict, pane_out
 class CommandHandler:
     """Handles bot commands like /debug, /todo, /setup."""
 
-    def __init__(self, bot_token: str, chat_id: str, state: State, process_manager=None, permission_manager=None):
+    def __init__(self, bot_token: str, chat_id: str, state: State, process_manager=None, permission_manager=None,
+                 get_task_stats: Callable[[str], dict | None] = None):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.state = state
         self.process_manager = process_manager
         self.permission_manager = permission_manager
+        self.get_task_stats = get_task_stats
 
-    def _reply(self, chat_id: str, msg_id: int, text: str, parse_mode: str = "Markdown", topic_id: int = None):
+    async def _reply(self, chat_id: str, msg_id: int, text: str, parse_mode: str = "Markdown", topic_id: int = None):
         """Send a reply to a message."""
         log(f"_reply: chat_id={chat_id}, msg_id={msg_id}, text={text}")
-        send_reply(self.bot_token, chat_id, msg_id, text, parse_mode, topic_id)
+        await asyncio.to_thread(send_reply, self.bot_token, chat_id, msg_id, text, parse_mode, topic_id)
 
     def _typing(self, chat_id: str, topic_id: int = None):
         """Show typing indicator."""
         send_chat_action(self.bot_token, chat_id, "typing", topic_id)
 
-    def _reply_sent_to_operator(self, chat_id: str, msg_id: int, topic_id: int | None):
+    async def _reply_sent_to_operator(self, chat_id: str, msg_id: int, topic_id: int | None):
         """Reply with link to operator topic, unless already in operator topic."""
         config = get_config()
         is_operator_topic = topic_id is None or topic_id == config.general_topic_id
@@ -170,7 +174,7 @@ class CommandHandler:
         general_topic = config.general_topic_id or 1
         link_chat_id = str(group_id).replace("-100", "")
         link = f"https://t.me/c/{link_chat_id}/{general_topic}"
-        self._reply(chat_id, msg_id, f"Sent to [Operator]({link})")
+        await self._reply(chat_id, msg_id, f"Sent to [Operator]({link})")
 
     def _format_reply_context(self, msg: dict) -> str | None:
         """Format context from a replied-to message for the operator."""
@@ -193,7 +197,7 @@ class CommandHandler:
         ts = datetime.datetime.fromtimestamp(reply_date).strftime("%H:%M:%S") if reply_date else "?"
         return f"[Replying to msg_id={reply_msg_id} from {reply_from} at {ts}]\n{reply_text}{state_info}"
 
-    def handle_command(self, msg: dict) -> bool:
+    async def handle_command(self, msg: dict) -> bool:
         """Handle a command message. Returns True if handled, False otherwise."""
         text = msg.get("text", "").strip()
         msg_id = msg.get("message_id")
@@ -204,71 +208,71 @@ class CommandHandler:
 
         # /todo - route to operator
         if text_lower.startswith("/todo"):
-            self._handle_todo(msg, chat_id, msg_id, text, topic_id)
+            await self._handle_todo(msg, chat_id, msg_id, text, topic_id)
             return True
 
         # /debug - route to operator (requires reply)
         if text_lower.startswith("/debug") or (msg.get("reply_to_message") and text_lower in ("debug", "?")):
-            self._handle_debug(msg, chat_id, msg_id, text)
+            await self._handle_debug(msg, chat_id, msg_id, text)
             return True
 
         # /setup - initialize group
         if text_lower.startswith("/setup"):
-            self._handle_setup(msg, chat_id, msg_id)
+            await self._handle_setup(msg, chat_id, msg_id)
             return True
 
         # /help - show commands
         if text_lower.startswith("/help"):
-            self._handle_help(chat_id, msg_id)
+            await self._handle_help(chat_id, msg_id)
             return True
 
-        # /status - show task status
+        # /status - show task status (context-aware: detailed if in task topic)
         if text_lower.startswith("/status"):
-            self._handle_status(chat_id, msg_id)
+            await self._handle_status(chat_id, msg_id, topic_id)
             return True
 
         # /spawn - create a new task (routes to operator)
         if text_lower.startswith("/spawn"):
-            self._handle_spawn(msg, chat_id, msg_id, text, topic_id)
+            await self._handle_spawn(msg, chat_id, msg_id, text, topic_id)
             return True
 
         # /cleanup - clean up a task (routes to operator)
         if text_lower.startswith("/cleanup"):
-            self._handle_cleanup(msg, chat_id, msg_id, text, topic_id)
+            await self._handle_cleanup(msg, chat_id, msg_id, text, topic_id)
             return True
 
         # /rebuild-registry - maintenance command to rebuild from markers
         if text_lower.startswith("/rebuild-registry"):
-            self._handle_rebuild_registry(chat_id, msg_id)
+            await self._handle_rebuild_registry(chat_id, msg_id)
             return True
 
         # /summarize - have operator summarize all tasks
         if text_lower.startswith("/summarize"):
-            self._handle_summarize(chat_id, msg_id, topic_id)
+            await self._handle_summarize(chat_id, msg_id, topic_id)
             return True
 
         # /operator - request operator intervention for current task
         if text_lower.startswith("/operator"):
-            self._handle_operator(msg, chat_id, msg_id, text, topic_id)
+            await self._handle_operator(msg, chat_id, msg_id, text, topic_id)
             return True
 
         # /stop - stop current task's Claude process
         if text_lower.startswith("/stop"):
-            self._handle_stop(msg, chat_id, msg_id, text, topic_id)
+            await self._handle_stop(msg, chat_id, msg_id, text, topic_id)
             return True
 
         # /connect - print CLI command to connect to task's session
         if text_lower.startswith("/connect"):
-            self._handle_connect(msg, chat_id, msg_id, text, topic_id)
+            await self._handle_connect(msg, chat_id, msg_id, text, topic_id)
             return True
 
         return False
 
-    def _handle_todo(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
+    async def _handle_todo(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /todo - write to TODO.local.md for task topics, route to operator for general."""
         todo_text = text[5:].strip()  # Remove "/todo"
         if not todo_text:
-            self._reply(chat_id, msg_id, "Usage: /todo <item>")
+            await self._reply(chat_id, msg_id, "Usage: /todo <item>")
             return
 
         # Get task context from registry if from a task topic
@@ -287,10 +291,10 @@ class CommandHandler:
         if task_name and task_data and not is_general:
             path = task_data.get("path")
             if path and append_todo(path, todo_text):
-                self._reply(chat_id, msg_id, "✅ Added to .agent-files/TODO.md")
+                await self._reply(chat_id, msg_id, "✅ Added to .agent-files/TODO.md")
                 log(f"  /todo added to {task_name}: {todo_text[:50]}...")
             else:
-                self._reply(chat_id, msg_id, "Failed to add todo")
+                await self._reply(chat_id, msg_id, "Failed to add todo")
             return
 
         # General topic or no task: route to operator
@@ -325,12 +329,12 @@ class CommandHandler:
             self._typing(chat_id, topic_id)
             log(f"  /todo sent to operator: {todo_text[:50]}...")
         else:
-            self._reply(chat_id, msg_id, "Operator not available")
+            await self._reply(chat_id, msg_id, "Operator not available")
 
-    def _handle_debug(self, msg: dict, chat_id: str, msg_id: int, text: str):
+    async def _handle_debug(self, msg: dict, chat_id: str, msg_id: int, text: str):
         """Handle /debug - dump debug info for a message."""
         if not msg.get("reply_to_message"):
-            self._reply(chat_id, msg_id, "Reply to a message to debug it")
+            await self._reply(chat_id, msg_id, "Reply to a message to debug it")
             return
 
         reply_to = msg["reply_to_message"]
@@ -382,10 +386,10 @@ class CommandHandler:
         if not has_state:
             lines.append("\n_No state tracked for this message_")
 
-        self._reply(chat_id, msg_id, "\n".join(lines))
+        await self._reply(chat_id, msg_id, "\n".join(lines))
         log(f"  /debug for msg_id={reply_to_id}")
 
-    def _handle_setup(self, msg: dict, chat_id: str, msg_id: int):
+    async def _handle_setup(self, msg: dict, chat_id: str, msg_id: int):
         """Handle /setup - initialize group as Claude Army control center."""
         chat = msg.get("chat", {})
         chat_id_int = chat.get("id")
@@ -394,7 +398,7 @@ class CommandHandler:
         log(f"  /setup in chat {chat_id_int} (type: {chat_type})")
 
         if chat_type not in ("group", "supergroup"):
-            self._reply(chat_id, msg_id,
+            await self._reply(chat_id, msg_id,
                 "To set up Claude Army:\n\n"
                 "1. Create a new Telegram group\n"
                 "2. Add this bot to the group as admin\n"
@@ -406,15 +410,15 @@ class CommandHandler:
 
         if config.is_configured():
             if config.group_id != chat_id_int:
-                self._reply(chat_id, msg_id,
+                await self._reply(chat_id, msg_id,
                     f"Already configured for another group (ID: {config.group_id}). "
                     "Run /reset in that group first.")
                 return
-            self._reply(chat_id, msg_id, "Already set up in this group.")
+            await self._reply(chat_id, msg_id, "Already set up in this group.")
             return
 
         if not is_forum_enabled(self.bot_token, str(chat_id_int)):
-            self._reply(chat_id, msg_id,
+            await self._reply(chat_id, msg_id,
                 "This group needs to be a Forum (supergroup with topics enabled).\n\n"
                 "To enable:\n"
                 "1. Open group settings\n"
@@ -430,56 +434,129 @@ class CommandHandler:
         # Start operator session
         process_id = start_operator_session()
         if process_id:
-            self._reply(chat_id, msg_id,
+            await self._reply(chat_id, msg_id,
                 "Claude Army initialized!\n\n"
                 "Operator Claude is running. Send messages here to interact.\n\n"
                 "Use /help to see available commands.")
         else:
-            self._reply(chat_id, msg_id,
+            await self._reply(chat_id, msg_id,
                 "Claude Army configured, but failed to start Operator session.\n"
                 "Check that the Claude CLI is available.")
 
         log(f"  Setup complete for group {chat_id_int}")
 
-    def _handle_status(self, chat_id: str, msg_id: int):
-        """Handle /status - show all tasks and their status."""
-        config = get_config()
+    async def _handle_status(self, chat_id: str, msg_id: int, topic_id: int | None = None):
+        """Handle /status - show all tasks or detailed task status if in task topic."""
+        # Check if we're in a task topic (not operator/general)
+        task_name = self._get_task_name_for_topic(topic_id)
+        if task_name and task_name != "operator":
+            await self._handle_task_status(chat_id, msg_id, task_name, topic_id)
+            return
+
+        # Global status: show all tasks
         registry = get_registry()
+        lines = ["*Status*\n"]
 
-        if not config.is_configured():
-            self._reply(chat_id, msg_id, "Claude Army not configured. Run /setup first.")
-            return
+        # Get pending permissions
+        pending = list(self.permission_manager.pending.values()) if self.permission_manager else []
+        if pending:
+            lines.append(f"⚠️ *{len(pending)} pending permission(s)*\n")
 
-        tasks = registry.get_all_tasks()
+        tasks = list(registry.get_all_tasks())
         if not tasks:
-            self._reply(chat_id, msg_id, "No active tasks.")
+            lines.append("No tasks.")
+            await self._reply(chat_id, msg_id, "\n".join(lines), topic_id=topic_id)
             return
 
-        lines = ["*Task Status*\n"]
         for task_name, task_data in tasks:
-            # Check if process is running (if ProcessManager available)
-            is_running = False
-            if self.process_manager:
-                is_running = self.process_manager.is_running(task_name)
+            is_running = self.process_manager.is_running(task_name) if self.process_manager else False
+            session_id = task_data.get("session_id")
 
-            status = task_data.get("status", "unknown")
-            task_type = task_data.get("type", "session")
-            topic_id = task_data.get("topic_id", "?")
+            # Check if blocked on permission
+            blocked_on = None
+            if session_id:
+                for p in pending:
+                    if p.session_id == session_id:
+                        blocked_on = p.tool_name
+                        break
 
-            # Show running status if ProcessManager available
-            if self.process_manager:
-                emoji = "▶️" if is_running else "⏸️"
-                status_text = "running" if is_running else "stopped"
+            if blocked_on:
+                lines.append(f"🔐 `{task_name}` - Permission: `{blocked_on}`")
+            elif is_running:
+                lines.append(f"▶️ `{task_name}` - Running")
             else:
-                emoji = "▶️" if status == "active" else "⏸️" if status == "paused" else "❓"
-                status_text = status
+                lines.append(f"⏹️ `{task_name}` - Stopped")
 
-            type_indicator = "🌳" if task_type == "worktree" else "📁"
-            lines.append(f"{emoji}{type_indicator} `{task_name}` ({status_text})")
+        await self._reply(chat_id, msg_id, "\n".join(lines), topic_id=topic_id)
 
-        self._reply(chat_id, msg_id, "\n".join(lines))
+    async def _handle_task_status(self, chat_id: str, msg_id: int, task_name: str, topic_id: int | None = None):
+        """Handle /status in a task topic - show detailed task info."""
+        registry = get_registry()
+        task_data = registry.get_task(task_name)
 
-    def _handle_rebuild_registry(self, chat_id: str, msg_id: int):
+        if not task_data:
+            await self._reply(chat_id, msg_id, f"Task `{task_name}` not found.", topic_id=topic_id)
+            return
+
+        lines = [f"*Status: {task_name}*\n"]
+
+        # Running state
+        is_running = self.process_manager.is_running(task_name) if self.process_manager else False
+
+        # Check if blocked on permission
+        pending = list(self.permission_manager.pending.values()) if self.permission_manager else []
+        session_id = task_data.get("session_id")
+        blocked_on = None
+        if session_id:
+            for p in pending:
+                if p.session_id == session_id:
+                    blocked_on = p.tool_name
+                    break
+
+        if blocked_on:
+            lines.append(f"🔐 Permission: `{blocked_on}`")
+        elif is_running:
+            lines.append("▶️ Running")
+        else:
+            lines.append("⏹️ Stopped")
+
+        # PID
+        pid = task_data.get("pid")
+        if pid:
+            lines.append(f"PID: {pid}")
+
+        # Session ID (truncated)
+        if session_id:
+            lines.append(f"Session: `{session_id[:12]}...`")
+
+        # Path
+        path = task_data.get("path")
+        if path:
+            lines.append(f"Path: `{path}`")
+
+        # Cost/turns/last_activity from stats
+        if self.get_task_stats:
+            stats = self.get_task_stats(task_name)
+            if stats:
+                lines.append("")
+                cost = stats.get("cost", 0)
+                turns = stats.get("turns", 0)
+                lines.append(f"Cost: ${cost:.4f} ({turns} turns)")
+
+                last_activity = stats.get("last_activity", 0)
+                if last_activity > 0:
+                    ago = time.time() - last_activity
+                    if ago < 60:
+                        ago_str = f"{int(ago)}s ago"
+                    elif ago < 3600:
+                        ago_str = f"{int(ago / 60)}m ago"
+                    else:
+                        ago_str = f"{int(ago / 3600)}h ago"
+                    lines.append(f"Last activity: {ago_str}")
+
+        await self._reply(chat_id, msg_id, "\n".join(lines), topic_id=topic_id)
+
+    async def _handle_rebuild_registry(self, chat_id: str, msg_id: int):
         """Handle /rebuild-registry - rebuild registry from marker files.
 
         This is a maintenance command for edge cases where the registry gets
@@ -488,22 +565,22 @@ class CommandHandler:
         config = get_config()
 
         if not config.is_configured():
-            self._reply(chat_id, msg_id, "Claude Army not configured. Run /setup first.")
+            await self._reply(chat_id, msg_id, "Claude Army not configured. Run /setup first.")
             return
 
-        self._reply(chat_id, msg_id, "Scanning for marker files...")
+        await self._reply(chat_id, msg_id, "Scanning for marker files...")
         recovered = rebuild_registry_from_markers()
 
         if recovered > 0:
-            self._reply(chat_id, msg_id, f"Recovered {recovered} task(s). Run /status to see them.")
+            await self._reply(chat_id, msg_id, f"Recovered {recovered} task(s). Run /status to see them.")
         else:
-            self._reply(chat_id, msg_id, "No new tasks found.")
+            await self._reply(chat_id, msg_id, "No new tasks found.")
 
-    def _handle_summarize(self, chat_id: str, msg_id: int, topic_id: int | None):
+    async def _handle_summarize(self, chat_id: str, msg_id: int, topic_id: int | None):
         """Handle /summarize - have operator summarize all tasks."""
         config = get_config()
         if not config.is_configured():
-            self._reply(chat_id, msg_id, "Not configured. Run /setup first.")
+            await self._reply(chat_id, msg_id, "Not configured. Run /setup first.")
             return
 
         tasks = get_registry().get_all_tasks()
@@ -512,15 +589,15 @@ class CommandHandler:
         if send_to_operator(prompt):
             self._typing(chat_id, topic_id)
             log("  /summarize sent to operator")
-            self._reply_sent_to_operator(chat_id, msg_id, topic_id)
+            await self._reply_sent_to_operator(chat_id, msg_id, topic_id)
         else:
-            self._reply(chat_id, msg_id, "Operator not available")
+            await self._reply(chat_id, msg_id, "Operator not available")
 
-    def _handle_operator(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
+    async def _handle_operator(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /operator - request operator intervention for current task."""
         config = get_config()
         if not config.is_configured():
-            self._reply(chat_id, msg_id, "Not configured. Run /setup first.")
+            await self._reply(chat_id, msg_id, "Not configured. Run /setup first.")
             return
 
         # Get user message (everything after /operator)
@@ -529,7 +606,7 @@ class CommandHandler:
         # Get task context - must be from a task topic
         task_name = self._get_task_name_for_topic(topic_id)
         if not task_name or task_name == "operator":
-            self._reply(chat_id, msg_id, "Send from a task topic to request intervention.")
+            await self._reply(chat_id, msg_id, "Send from a task topic to request intervention.")
             return
 
         # Get task data from registry
@@ -542,16 +619,16 @@ class CommandHandler:
         if send_to_operator(prompt):
             self._typing(chat_id, topic_id)
             log(f"  /operator sent to operator: {task_name}")
-            self._reply_sent_to_operator(chat_id, msg_id, topic_id)
+            await self._reply_sent_to_operator(chat_id, msg_id, topic_id)
         else:
-            self._reply(chat_id, msg_id, "Operator not available")
+            await self._reply(chat_id, msg_id, "Operator not available")
 
-    def _handle_connect(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
+    async def _handle_connect(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /connect - print CLI command to connect to task's session."""
         task_name = self._get_task_name_for_topic(topic_id)
 
         if not task_name:
-            self._reply(chat_id, msg_id, "No task in this topic.")
+            await self._reply(chat_id, msg_id, "No task in this topic.")
             return
 
         registry = get_registry()
@@ -567,17 +644,17 @@ class CommandHandler:
             path = task_data.get("path") if task_data else None
 
         if not session_id:
-            self._reply(chat_id, msg_id, f"Task `{task_name}` has no active session.")
+            await self._reply(chat_id, msg_id, f"Task `{task_name}` has no active session.")
             return
 
         if not path:
-            self._reply(chat_id, msg_id, f"Task `{task_name}` has no path recorded.")
+            await self._reply(chat_id, msg_id, f"Task `{task_name}` has no path recorded.")
             return
 
         cmd = f"cd {path} && claude --resume {session_id}"
-        self._reply(chat_id, msg_id, f"```\n{cmd}\n```")
+        await self._reply(chat_id, msg_id, f"```\n{cmd}\n```")
 
-    def _handle_stop(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
+    async def _handle_stop(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /stop - stop current task's Claude process."""
         task_name = parse_command_args(text)
 
@@ -585,19 +662,19 @@ class CommandHandler:
             task_name = self._get_task_name_for_topic(topic_id)
 
         if not task_name:
-            self._reply(chat_id, msg_id, "No task in this topic. Use `/stop <task_name>` to specify.")
+            await self._reply(chat_id, msg_id, "No task in this topic. Use `/stop <task_name>` to specify.")
             return
 
         if task_name == "operator":
-            self._reply(chat_id, msg_id, "Cannot stop operator.")
+            await self._reply(chat_id, msg_id, "Cannot stop operator.")
             return
 
         if not self.process_manager:
-            self._reply(chat_id, msg_id, "Process manager not available.")
+            await self._reply(chat_id, msg_id, "Process manager not available.")
             return
 
         if not self.process_manager.is_running(task_name):
-            self._reply(chat_id, msg_id, f"Task `{task_name}` is not running.")
+            await self._reply(chat_id, msg_id, f"Task `{task_name}` is not running.")
             return
 
         async def do_stop():
@@ -607,13 +684,13 @@ class CommandHandler:
                 log(f"Error stopping {task_name}: {e}")
 
         asyncio.create_task(do_stop())
-        self._reply(chat_id, msg_id, f"Stopping `{task_name}`...")
+        await self._reply(chat_id, msg_id, f"Stopping `{task_name}`...")
 
-    def _handle_spawn(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
+    async def _handle_spawn(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /spawn - route spawn request to operator."""
         request = parse_command_args(text)
         if not request:
-            self._reply(chat_id, msg_id, "Usage: /spawn <description of task to create>")
+            await self._reply(chat_id, msg_id, "Usage: /spawn <description of task to create>")
             return
 
         # Get task context from registry if from a task topic
@@ -632,11 +709,11 @@ class CommandHandler:
         if send_to_operator(prompt):
             self._typing(chat_id, topic_id)
             log(f"  /spawn sent to operator: {request[:50]}...")
-            self._reply_sent_to_operator(chat_id, msg_id, topic_id)
+            await self._reply_sent_to_operator(chat_id, msg_id, topic_id)
         else:
-            self._reply(chat_id, msg_id, "Operator not available")
+            await self._reply(chat_id, msg_id, "Operator not available")
 
-    def _handle_cleanup(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
+    async def _handle_cleanup(self, msg: dict, chat_id: str, msg_id: int, text: str, topic_id: int | None):
         """Handle /cleanup - route cleanup request to operator."""
         registry = get_registry()
         task_name = parse_command_args(text)
@@ -651,20 +728,20 @@ class CommandHandler:
             tasks = registry.get_all_tasks()
             if tasks:
                 task_list = ", ".join(name for name, _ in tasks)
-                self._reply(chat_id, msg_id, f"Usage: /cleanup <task_name>\n\nAvailable tasks: {task_list}")
+                await self._reply(chat_id, msg_id, f"Usage: /cleanup <task_name>\n\nAvailable tasks: {task_list}")
             else:
-                self._reply(chat_id, msg_id, "Usage: /cleanup <task_name>\n\nNo active tasks.")
+                await self._reply(chat_id, msg_id, "Usage: /cleanup <task_name>\n\nNo active tasks.")
             return
 
         task_data = registry.get_task(task_name)
         if not task_data:
-            self._reply(chat_id, msg_id, f"Task '{task_name}' not found. Run /status to see tasks.")
+            await self._reply(chat_id, msg_id, f"Task '{task_name}' not found. Run /status to see tasks.")
             return
 
         prompt = build_cleanup_prompt(task_name, task_data)
         send_to_operator(prompt)
         log(f"  /cleanup sent to operator: {task_name}")
-        self._reply_sent_to_operator(chat_id, msg_id, topic_id)
+        await self._reply_sent_to_operator(chat_id, msg_id, topic_id)
 
     def _get_task_name_for_topic(self, topic_id: int | None) -> str | None:
         """Get task name for a topic. Returns 'operator' for General topic."""
@@ -680,7 +757,7 @@ class CommandHandler:
             return task_name
         return None
 
-    def _handle_help(self, chat_id: str, msg_id: int):
+    async def _handle_help(self, chat_id: str, msg_id: int):
         """Handle /help - show available commands."""
         config = get_config()
 
@@ -709,4 +786,4 @@ class CommandHandler:
         else:
             help_text += "\n_Status: Not configured_"
 
-        self._reply(chat_id, msg_id, help_text)
+        await self._reply(chat_id, msg_id, help_text)

@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 from telegram_utils import log
@@ -86,7 +87,14 @@ class Daemon:
         self.process_manager = ProcessManager()
         self.permission_manager = PermissionManager()
         self.telegram = TelegramAdapter(bot_token, chat_id)
-        self.command_handler = CommandHandler(bot_token, chat_id, {}, self.process_manager, self.permission_manager)
+
+        # Task runtime stats (cost, turns, last_activity)
+        self._task_stats: dict[str, dict] = {}
+
+        self.command_handler = CommandHandler(
+            bot_token, chat_id, {}, self.process_manager, self.permission_manager,
+            get_task_stats=self.get_task_stats
+        )
 
         self._running = False
 
@@ -252,7 +260,7 @@ class Daemon:
                                 "reply_to_message": msg.reply_to_message
                             }
                             log(f"Command: text={msg.text}, topic_id={topic_id}, chat_id={group_chat_id}, reply_to_message={msg.reply_to_message}")
-                            handled = self.command_handler.handle_command(tg_msg)
+                            handled = await self.command_handler.handle_command(tg_msg)
                             log(f"Command handled={handled}")
                             if handled:
                                 continue
@@ -373,6 +381,8 @@ class Daemon:
 
     async def _on_session_result(self, task_name: str, event: SessionResult) -> None:
         """Handle session result event - marks end of a turn, not end of session."""
+        # Update task stats
+        self._update_task_stats(task_name, event)
         # Just log, don't send to Telegram (noisy for multi-turn)
         status = "ok" if event.success else "error"
         log(f"Turn complete: {task_name} ({status}, ${event.cost:.4f})")
@@ -439,6 +449,17 @@ class Daemon:
             return task_data.get("topic_id")
 
         return None
+
+    def _update_task_stats(self, task_name: str, result: SessionResult) -> None:
+        """Update runtime stats for a task after a turn completes."""
+        stats = self._task_stats.setdefault(task_name, {"cost": 0.0, "turns": 0, "last_activity": 0.0})
+        stats["cost"] += result.total_cost_usd or 0.0
+        stats["turns"] += 1
+        stats["last_activity"] = time.time()
+
+    def get_task_stats(self, task_name: str) -> dict | None:
+        """Get runtime stats for a task."""
+        return self._task_stats.get(task_name)
 
 
 async def main(config_file: Path = DEFAULT_CONFIG_FILE, pid_file: Path = DEFAULT_PID_FILE) -> int:
