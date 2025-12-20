@@ -255,14 +255,12 @@ class TestClaudeProcessIntegration:
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             process = ClaudeProcess(cwd=temp_dir)
 
-            # Start emitting events
+            # Start process (now waits for and returns session_id)
             emit_task = asyncio.create_task(mock_proc.emit_events())
+            session_id = await process.start()
+            assert session_id == "test-session-abc123"
 
-            # Start process
-            started = await process.start()
-            assert started is True
-
-            # Read events
+            # SystemInit event should still be in queue
             events_received = []
             async for event in process.events():
                 events_received.append(event)
@@ -400,18 +398,18 @@ class TestClaudeProcessTerminate:
             assert len(terminate_called) == 1  # terminate() was called
 
     async def test_start_already_started(self, temp_dir):
-        """Test start when already started returns False."""
+        """Test start when already started raises RuntimeError."""
         mock_proc = MockClaudeSubprocess(events=[SYSTEM_INIT_EVENT])
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             process = ClaudeProcess(cwd=temp_dir)
             emit_task = asyncio.create_task(mock_proc.emit_events())
-            result1 = await process.start()
+            session_id = await process.start()
             await emit_task
-            assert result1 is True
+            assert session_id == "test-session-abc123"
 
-            result2 = await process.start()
-            assert result2 is False
+            with pytest.raises(RuntimeError, match="already started"):
+                await process.start()
 
     async def test_start_with_resume_session_id(self, temp_dir):
         """Test start with resume_session_id adds --resume flag."""
@@ -449,15 +447,15 @@ class TestClaudeProcessTerminate:
             assert "--allowedTools" in captured_cmd
             assert "Read,Grep" in captured_cmd
 
-    async def test_start_exception_returns_false(self, temp_dir):
-        """Test start returns False on exception."""
+    async def test_start_exception_raises(self, temp_dir):
+        """Test start raises RuntimeError on exception."""
         async def raise_error(*args, **kwargs):
             raise OSError("Cannot start process")
 
         with patch("asyncio.create_subprocess_exec", side_effect=raise_error):
             process = ClaudeProcess(cwd=temp_dir)
-            result = await process.start()
-            assert result is False
+            with pytest.raises(RuntimeError, match="Failed to start Claude"):
+                await process.start()
 
     async def test_send_message_not_running(self, temp_dir):
         """Test send_message when process not running returns False."""
@@ -576,7 +574,7 @@ class TestClaudeProcessErrorPaths:
             assert isinstance(events[0], SystemInit)
 
     async def test_read_stdout_exception(self, temp_dir):
-        """Test _read_stdout handles generic exception."""
+        """Test _read_stdout exception before init causes start() to timeout."""
         mock_proc = MockClaudeSubprocess(events=[])
 
         call_count = 0
@@ -591,12 +589,10 @@ class TestClaudeProcessErrorPaths:
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             process = ClaudeProcess(cwd=temp_dir)
-            await process.start()
-
-            events = []
-            async for event in process.events():
-                events.append(event)
-            assert events == []
+            # start() waits for session_id, which won't arrive due to error
+            # We use a short outer timeout to avoid waiting 30s for internal timeout
+            with pytest.raises((asyncio.TimeoutError, RuntimeError)):
+                await asyncio.wait_for(process.start(), timeout=1.0)
 
     async def test_read_stderr_no_process(self, temp_dir):
         """Test _read_stderr returns early when no process."""

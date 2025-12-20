@@ -107,10 +107,10 @@ class ProcessManager:
             allowed_tools=allowed_tools
         )
 
-        # Start subprocess and get session_id
+        # Start subprocess and get session_id (start() now waits for init)
         session_id = await process.start()
 
-        # Persist session_id and pid to registry
+        # Persist session_id and pid to registry BEFORE sending any messages
         registry = get_registry()
         task_data = registry.get_task(task_name)
         if task_data:
@@ -302,16 +302,16 @@ class ProcessManager:
             allowed_tools=allowed_tools
         )
 
-        # Start subprocess
-        started = await process.start()
-        if not started:
-            log(f"Failed to resurrect process: {task_name}")
+        # Start subprocess (start() now waits for session_id)
+        try:
+            session_id = await process.start()
+        except RuntimeError as e:
+            log(f"Failed to resurrect process: {task_name}: {e}")
             return False
 
-        # Update registry with new pid
+        # Update registry with new pid and session_id BEFORE sending message
         task_data["pid"] = process.pid
-        if process.session_id:
-            task_data["session_id"] = process.session_id
+        task_data["session_id"] = session_id
         registry.add_task(task_name, task_data)
 
         # Store process and start event monitoring

@@ -101,6 +101,7 @@ class ClaudeProcess:
 
         self.process: Optional[asyncio.subprocess.Process] = None
         self.session_id: Optional[str] = None
+        self._session_id_event: asyncio.Event = asyncio.Event()
         self._init_received: bool = False  # Set True after first system/init event
         self._stdout_task: Optional[asyncio.Task] = None
         self._stderr_task: Optional[asyncio.Task] = None
@@ -116,14 +117,17 @@ class ClaudeProcess:
         """Mark that system/init event has been received."""
         self._init_received = True
 
-    async def start(self) -> bool:
-        """Start the Claude subprocess.
+    async def start(self) -> str:
+        """Start the Claude subprocess and wait for session_id.
 
-        Returns True if started successfully, False otherwise.
+        Returns:
+            The session_id from the system/init event.
+
+        Raises:
+            RuntimeError: If already started, failed to start, or timed out waiting for init.
         """
         if self.process is not None:
-            log("ClaudeProcess already started")
-            return False
+            raise RuntimeError("ClaudeProcess already started")
 
         # Build command
         # -p enables print mode (required for multi-turn stream-json)
@@ -172,11 +176,21 @@ class ClaudeProcess:
             self._stderr_task = asyncio.create_task(self._read_stderr())
 
             log(f"Claude subprocess started (pid={self.process.pid})")
-            return True
 
+            # Wait for session_id from system/init event
+            try:
+                await asyncio.wait_for(self._session_id_event.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                await self.stop()
+                raise RuntimeError("Timed out waiting for session_id from Claude")
+
+            return self.session_id
+
+        except RuntimeError:
+            raise
         except Exception as e:
             log(f"Failed to start Claude: {e}")
-            return False
+            raise RuntimeError(f"Failed to start Claude: {e}")
 
     async def _read_stdout(self):
         """Read and parse JSONL from stdout, emit events to queue."""
@@ -246,6 +260,7 @@ class ClaudeProcess:
                     raw=event,
                 )
                 self.session_id = init.session_id
+                self._session_id_event.set()
                 await self._event_queue.put(init)
 
         elif event_type == "assistant":

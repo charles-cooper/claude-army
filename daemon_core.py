@@ -116,40 +116,39 @@ class Daemon:
         """Spawn the operator Claude process."""
         config = get_config()
         registry = get_registry()
+        cwd = str(Path(__file__).parent / "operator")
 
         # Check if operator is already running
         operator_data = registry.get_task("operator")
-        if operator_data and operator_data.get("session_id"):
-            session_id = operator_data["session_id"]
-            log(f"Resuming operator session: {session_id}")
-            try:
-                process = ClaudeProcess(
-                    cwd=str(Path.home()),
-                    resume_session_id=session_id
-                )
-                started = await process.start()
-                if started:
-                    self.process_manager.register_process("operator", process)
-                    log("Operator session resumed")
-                    return
-            except Exception as e:
-                log(f"Failed to resume operator: {e}, spawning new one")
+        resume_session_id = operator_data.get("session_id") if operator_data else None
 
-        # Spawn new operator
-        log("Spawning new operator session")
+        if resume_session_id:
+            log(f"Resuming operator session: {resume_session_id}")
+        else:
+            log("Spawning new operator session")
+
         try:
-            cwd = str(Path.home())
+            process = ClaudeProcess(
+                cwd=cwd,
+                resume_session_id=resume_session_id
+            )
 
-            process = ClaudeProcess(cwd=cwd)
-            started = await process.start()
-            if not started:
-                raise RuntimeError("Failed to start operator process")
+            # start() waits for session_id before returning
+            session_id = await process.start()
 
+            # Update registry IMMEDIATELY - before any messages are sent
+            operator_data = {
+                "type": "operator",
+                "path": cwd,
+                "topic_id": config.general_topic_id,
+                "status": "active",
+                "session_id": session_id,
+                "pid": process.pid
+            }
+            registry.add_task("operator", operator_data)
+
+            # Register with ProcessManager (don't start events yet)
             self.process_manager.register_process("operator", process, start_events=False)
-
-            # Wait for session_id from init event (should come quickly)
-            # Don't start event task yet - we need to handle init turn first
-            await asyncio.sleep(0.5)
 
             # Send initial prompt
             prompt = (
@@ -166,18 +165,7 @@ class Daemon:
             # Now start event task for subsequent user messages
             self.process_manager.start_event_monitoring("operator")
 
-            # Update registry with operator task
-            operator_data = {
-                "type": "operator",
-                "path": cwd,
-                "topic_id": config.general_topic_id,
-                "status": "active",
-                "session_id": process.session_id,
-                "pid": process.pid
-            }
-            registry.add_task("operator", operator_data)
-
-            log("Operator spawned successfully")
+            log("Operator session ready")
         except Exception as e:
             log(f"Failed to spawn operator: {e}")
 
